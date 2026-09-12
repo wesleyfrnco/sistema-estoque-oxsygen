@@ -100,6 +100,23 @@ button{cursor:pointer}
 .rank i{font-style:normal;font-size:13px;color:var(--tinta-suave);width:58px;text-align:right}
 .mes{display:flex;gap:9px;align-items:center;margin-bottom:16px}
 .mes select{background:#fff;border:1px solid var(--borda);border-radius:11px;padding:9px 11px;flex:1}
+.filtros{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.fchip{border:1px solid var(--borda);background:#fff;border-radius:999px;padding:6px 13px;font-size:13.5px;color:var(--tinta-suave)}
+.fchip.ativo{background:var(--tinta);color:var(--areia);border-color:var(--tinta)}
+.fchip:focus-visible{outline:2px solid var(--argila);outline-offset:1px}
+.datas{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.datas input{flex:1;background:#fff;border:1px solid var(--borda);border-radius:11px;padding:9px 11px;min-width:0}
+.datas span{font-size:13px;color:var(--tinta-suave)}
+.faixa{font-size:12.5px;color:var(--tinta-suave);margin-bottom:14px}
+.delta{display:block;font-size:11.5px;margin-top:3px}
+.delta.sobe{color:var(--oliva)}
+.delta.desce{color:#A8402F}
+.delta.igual{color:var(--tinta-suave)}
+.grafico{background:#fff;border:1px solid var(--borda);border-radius:var(--raio);padding:14px 14px 11px;margin-bottom:12px}
+.barras{display:flex;align-items:flex-end;gap:3px;height:78px;margin-bottom:7px}
+.barra{flex:1;background:var(--argila-fundo);border-radius:3px 3px 0 0;min-height:2px}
+.barra.pico{background:var(--argila)}
+.barras-legenda{display:flex;justify-content:space-between;font-size:11.5px;color:var(--tinta-suave)}
 .resumo-linha{background:var(--linho);border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:14.5px}
 .resumo-linha b{font-weight:500}
 .pessoa{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--borda);border-radius:12px;padding:11px 13px;margin-bottom:8px}
@@ -201,7 +218,7 @@ button{cursor:pointer}
   <section id="painel-vendas" class="oculto"><div id="listaVendas"></div></section>
 
   <section id="painel-resumo" class="oculto">
-    <div class="mes"><select id="filtroMes" aria-label="Mês"></select></div>
+    <div id="areaFiltro"></div>
     <div id="conteudoResumo"></div>
     <div id="areaEquipe"></div>
     <div id="areaBackup"></div>
@@ -369,7 +386,7 @@ document.getElementById('btnSair').addEventListener('click', () => {
 
 /* ===== estado ===== */
 async function carregarEstado(){
-  const dados = await api('/api/estado');
+  const dados = await api('/api/estado?limite=3000');
   estado = dados;
   if (dono()){
     try { equipe = (await api('/api/equipe')).equipe || []; } catch(e){ equipe = []; }
@@ -466,13 +483,153 @@ function renderVendas(){
   alvo.innerHTML = html;
 }
 
+/* ===== período ===== */
+let periodo = { tipo:'mes', de:'', ate:'' };
+
+const hojeLocal = () => { const d = new Date(); d.setHours(0,0,0,0); return d; };
+const fimDoDia = d => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
+const somaDias = (d,n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
+const iso = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const doIso = s => { const [a,m,d] = s.split('-').map(Number); return new Date(a,m-1,d); };
+const curta = d => d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit'});
+
+function faixaAtual(){
+  const hoje = hojeLocal();
+  if (periodo.tipo === 'hoje')  return { de:hoje, ate:fimDoDia(hoje) };
+  if (periodo.tipo === '7')     return { de:somaDias(hoje,-6), ate:fimDoDia(hoje) };
+  if (periodo.tipo === '30')    return { de:somaDias(hoje,-29), ate:fimDoDia(hoje) };
+  if (periodo.tipo === 'mes')   return { de:new Date(hoje.getFullYear(),hoje.getMonth(),1), ate:fimDoDia(hoje) };
+  if (periodo.tipo === 'anterior') return {
+    de: new Date(hoje.getFullYear(), hoje.getMonth()-1, 1),
+    ate: fimDoDia(new Date(hoje.getFullYear(), hoje.getMonth(), 0))
+  };
+  if (periodo.tipo === 'custom') return {
+    de: periodo.de ? doIso(periodo.de) : somaDias(hoje,-29),
+    ate: periodo.ate ? fimDoDia(doIso(periodo.ate)) : fimDoDia(hoje)
+  };
+  const datas = estado.movimentos.map(m => new Date(m.ts).getTime());
+  const inicio = datas.length ? new Date(Math.min.apply(null, datas)) : hoje;
+  inicio.setHours(0,0,0,0);
+  return { de:inicio, ate:fimDoDia(hoje), tudo:true };
+}
+
+function faixaAnterior(f){
+  if (f.tudo) return null;
+  const duracao = f.ate.getTime() - f.de.getTime();
+  return { de: new Date(f.de.getTime() - duracao - 1), ate: new Date(f.de.getTime() - 1) };
+}
+
+function vendasNa(f){
+  if (!f) return [];
+  return estado.movimentos.filter(m => {
+    if (m.tipo !== 'venda') return false;
+    const t = new Date(m.ts).getTime();
+    return t >= f.de.getTime() && t <= f.ate.getTime();
+  });
+}
+
+function metricas(vendas){
+  const receita = vendas.reduce((s,m)=>s+m.unit*m.qtd,0);
+  const pecas   = vendas.reduce((s,m)=>s+m.qtd,0);
+  const lucro   = vendas.reduce((s,m)=>s+(m.unit-(m.custoUnit||0))*m.qtd,0);
+  return { receita, pecas, lucro, n:vendas.length,
+    ticket: vendas.length ? receita/vendas.length : 0,
+    margem: receita ? lucro/receita*100 : 0 };
+}
+
+function delta(atual, anterior){
+  if (anterior == null) return '';
+  if (!anterior) return atual ? '<span class="delta sobe">sem base anterior</span>' : '';
+  const v = (atual - anterior) / anterior * 100;
+  const cls = v > 0.5 ? 'sobe' : (v < -0.5 ? 'desce' : 'igual');
+  return '<span class="delta '+cls+'">'+(v>0?'+':'')+v.toFixed(0)+'% vs anterior</span>';
+}
+
+function cartao(valor, rotulo, comparacao, destaque){
+  return '<div class="cartao'+(destaque?' destaque':'')+'"><b>'+valor+'</b><span>'+rotulo+'</span>'+(comparacao||'')+'</div>';
+}
+
+function renderFiltro(){
+  const presets = [['hoje','Hoje'],['7','7 dias'],['30','30 dias'],['mes','Este mês'],
+                   ['anterior','Mês passado'],['tudo','Tudo'],['custom','Escolher datas']];
+  const f = faixaAtual();
+  const anterior = faixaAnterior(f);
+  document.getElementById('areaFiltro').innerHTML =
+    '<div class="filtros">'+presets.map(([v,r]) =>
+      '<button class="fchip'+(periodo.tipo===v?' ativo':'')+'" data-acao="periodo" data-v="'+v+'">'+r+'</button>').join('')+'</div>'+
+    (periodo.tipo === 'custom'
+      ? '<div class="datas"><input type="date" id="dt-de" value="'+(periodo.de||iso(f.de))+'" aria-label="Data inicial">'+
+        '<span>até</span><input type="date" id="dt-ate" value="'+(periodo.ate||iso(new Date(f.ate)))+'" aria-label="Data final"></div>'
+      : '')+
+    '<div class="faixa">'+curta(f.de)+' a '+curta(f.ate)+
+      (anterior ? ' · comparando com '+curta(anterior.de)+' a '+curta(anterior.ate) : ' · sem comparação')+'</div>';
+
+  if (periodo.tipo === 'custom'){
+    ['dt-de','dt-ate'].forEach(campo => {
+      document.getElementById(campo).addEventListener('change', e => {
+        if (campo === 'dt-de') periodo.de = e.target.value; else periodo.ate = e.target.value;
+        renderResumo();
+      });
+    });
+  }
+}
+
+function grafico(vendas, f){
+  const dias = Math.round((f.ate - f.de) / 864e5);
+  if (!vendas.length || dias < 1) return '';
+  const porMes = dias > 70;
+  const grupos = {};
+  vendas.forEach(m => {
+    const d = new Date(m.ts);
+    const k = porMes ? iso(d).slice(0,7) : iso(d);
+    grupos[k] = (grupos[k] || 0) + m.unit * m.qtd;
+  });
+  const chaves = [];
+  if (porMes){
+    let c = new Date(f.de.getFullYear(), f.de.getMonth(), 1);
+    while (c <= f.ate){ chaves.push(iso(c).slice(0,7)); c = new Date(c.getFullYear(), c.getMonth()+1, 1); }
+  } else {
+    for (let c = new Date(f.de); c <= f.ate; c = somaDias(c,1)) chaves.push(iso(c));
+  }
+  if (chaves.length > 92) return '';
+  const valores = chaves.map(k => grupos[k] || 0);
+  const teto = Math.max.apply(null, valores) || 1;
+  const barras = chaves.map((k,i) => {
+    const rotulo = porMes ? nomeMes(k) : new Date(k+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+    return '<div class="barra'+(valores[i]===teto?' pico':'')+'" style="height:'+
+      Math.max(2,(valores[i]/teto*100))+'%" title="'+rotulo+': '+brl(valores[i])+'"></div>';
+  }).join('');
+  const prim = porMes ? nomeMes(chaves[0]) : curta(doIso(chaves[0]));
+  const ult  = porMes ? nomeMes(chaves[chaves.length-1]) : curta(doIso(chaves[chaves.length-1]));
+  return '<div class="grafico"><div class="barras">'+barras+'</div>'+
+    '<div class="barras-legenda"><span>'+prim+'</span><span>pico '+brl(teto)+'</span><span>'+ult+'</span></div></div>';
+}
+
+function agrupar(vendas, chave){
+  const mapa = {};
+  vendas.forEach(m => {
+    const k = chave(m);
+    if (!k) return;
+    mapa[k] = mapa[k] || { qtd:0, val:0 };
+    mapa[k].qtd += m.qtd;
+    mapa[k].val += m.unit * m.qtd;
+  });
+  return Object.entries(mapa).sort((a,b) => b[1].val - a[1].val);
+}
+
+function listaRank(titulo, itens, limite){
+  if (!itens.length) return '';
+  return '<div class="secao">'+titulo+'</div>'+itens.slice(0, limite||6).map(([nome,d]) =>
+    '<div class="rank"><span>'+esc(nome)+'</span><i>'+d.qtd+' un</i><b>'+brl(d.val)+'</b></div>').join('');
+}
+
 function renderResumo(){
-  const seletor = document.getElementById('filtroMes');
-  const meses = Array.from(new Set(estado.movimentos.map(m => chaveMes(m.ts)))).sort().reverse();
-  const atual = chaveMes(new Date().toISOString());
-  if (!meses.includes(atual)) meses.unshift(atual);
-  const escolhido = meses.includes(seletor.value) ? seletor.value : meses[0];
-  seletor.innerHTML = meses.map(m => '<option value="'+m+'"'+(m===escolhido?' selected':'')+'>'+nomeMes(m)+'</option>').join('');
+  renderFiltro();
+  const f = faixaAtual();
+  const anterior = faixaAnterior(f);
+  const vendas = vendasNa(f);
+  const a = metricas(vendas);
+  const b = anterior ? metricas(vendasNa(anterior)) : null;
 
   let pecas = 0, capital = 0, previsto = 0;
   estado.produtos.forEach(p => {
@@ -480,36 +637,46 @@ function renderResumo(){
     pecas += t; capital += t*(p.custo||0); previsto += t*p.preco;
   });
 
-  const doMes = estado.movimentos.filter(m => m.tipo === 'venda' && chaveMes(m.ts) === escolhido);
-  const unidades = doMes.reduce((s,m)=>s+m.qtd,0);
-  const receita = doMes.reduce((s,m)=>s+m.unit*m.qtd,0);
-  const lucro = dono() ? doMes.reduce((s,m)=>s+(m.unit-(m.custoUnit||0))*m.qtd,0) : 0;
-  const margem = receita ? lucro/receita*100 : 0;
+  const corDe = pid => {
+    const p = estado.produtos.find(x => x.id === pid);
+    return p && p.cor ? p.cor : '';
+  };
+  const porPeca   = agrupar(vendas, m => m.nome);
+  const porTam    = agrupar(vendas, m => m.tam);
+  const porCor    = agrupar(vendas, m => corDe(m.produtoId));
+  const porPessoa = agrupar(vendas, m => m.usuario);
 
-  const ranking = {};
-  doMes.forEach(m => {
-    ranking[m.nome] = ranking[m.nome] || { qtd:0, val:0 };
-    ranking[m.nome].qtd += m.qtd;
-    ranking[m.nome].val += m.unit*m.qtd;
-  });
-  const top = Object.entries(ranking).sort((a,b)=>b[1].val-a[1].val).slice(0,6);
+  const vendidos = new Set(vendas.map(m => m.produtoId));
+  const paradas = estado.produtos
+    .filter(p => totalProduto(p) > 0 && !vendidos.has(p.id))
+    .map(p => [p.nome + (p.cor ? ' · '+p.cor : ''), { qtd: totalProduto(p), val: totalProduto(p)*(p.custo||0) }])
+    .sort((x,y) => y[1].val - x[1].val);
 
   document.getElementById('conteudoResumo').innerHTML =
     '<div class="cartoes">'+
-      (dono() ? '<div class="cartao destaque"><b>'+brl(lucro)+'</b><span>lucro no mês</span></div>' : '')+
-      '<div class="cartao"><b>'+brl(receita)+'</b><span>vendido no mês</span></div>'+
-      '<div class="cartao"><b>'+unidades+'</b><span>peças vendidas</span></div>'+
-      (dono() ? '<div class="cartao"><b>'+margem.toFixed(0)+'%</b><span>margem média</span></div>' : '')+
+      (dono() ? cartao(brl(a.lucro), 'lucro no período', delta(a.lucro, b&&b.lucro), true) : '')+
+      cartao(brl(a.receita), 'vendido no período', delta(a.receita, b&&b.receita))+
+      cartao(String(a.pecas), 'peças vendidas', delta(a.pecas, b&&b.pecas))+
+      cartao(String(a.n), 'vendas registradas', delta(a.n, b&&b.n))+
+      cartao(brl(a.ticket), 'ticket médio', delta(a.ticket, b&&b.ticket))+
+      (dono() ? cartao(a.margem.toFixed(0)+'%', 'margem média', delta(a.margem, b&&b.margem)) : '')+
     '</div>'+
+    grafico(vendas, f)+
+    listaRank('Mais vendidas', porPeca)+
+    listaRank('Por tamanho', porTam, 8)+
+    listaRank('Por cor', porCor)+
+    (porPessoa.length > 1 ? listaRank('Quem vendeu', porPessoa) : '')+
     '<div class="secao">Estoque agora</div>'+
     '<div class="cartoes">'+
-      '<div class="cartao"><b>'+pecas+'</b><span>peças paradas</span></div>'+
-      (dono() ? '<div class="cartao"><b>'+brl(capital)+'</b><span>investido em peças</span></div>' : '')+
+      cartao(String(pecas), 'peças paradas')+
+      (dono() ? cartao(brl(capital), 'investido em peças') : '')+
     '</div>'+
     (dono() ? '<div class="resumo-linha">Se vender tudo pelo preço atual: <b>'+brl(previsto)+
       '</b>, com lucro de <b>'+brl(previsto-capital)+'</b>.</div>' : '')+
-    (top.length ? '<div class="secao">Mais vendidas no mês</div>'+top.map(([nome,d]) =>
-      '<div class="rank"><span>'+esc(nome)+'</span><i>'+d.qtd+' un</i><b>'+brl(d.val)+'</b></div>').join('') : '');
+    (paradas.length && dono()
+      ? '<div class="secao">Não saiu no período</div>'+paradas.slice(0,6).map(([nome,d]) =>
+          '<div class="rank"><span>'+esc(nome)+'</span><i>'+d.qtd+' un</i><b>'+brl(d.val)+' parados</b></div>').join('')
+      : '');
 
   document.getElementById('areaEquipe').innerHTML = dono()
     ? '<div class="secao">Quem tem acesso</div>'+
@@ -521,7 +688,7 @@ function renderResumo(){
 
   document.getElementById('areaBackup').innerHTML = dono()
     ? '<div class="secao">Exportar</div>'+
-      '<button class="btn fraco largo" data-acao="csv">Baixar movimentos em CSV</button>'+
+      '<button class="btn fraco largo" data-acao="csv">Baixar CSV do período</button>'+
       '<p class="nota">Os dados ficam no banco D1 da Cloudflare e são iguais para todo mundo que acessa. O D1 guarda histórico de 30 dias para restaurar o banco em caso de erro.</p>'
     : '';
 }
@@ -675,7 +842,11 @@ async function salvarPessoa(botao){
 /* ===== CSV ===== */
 function exportarCsv(){
   const linhas = [['data','tipo','peca','tamanho','quantidade','valor_unitario','custo_unitario','lucro','usuario']];
-  estado.movimentos.slice().sort((a,b)=>a.ts.localeCompare(b.ts)).forEach(m => {
+  const f = faixaAtual();
+  estado.movimentos.filter(m => {
+    const t = new Date(m.ts).getTime();
+    return t >= f.de.getTime() && t <= f.ate.getTime();
+  }).sort((a,b)=>a.ts.localeCompare(b.ts)).forEach(m => {
     const lucro = m.tipo === 'venda' ? (m.unit-(m.custoUnit||0))*m.qtd : 0;
     linhas.push([m.ts.slice(0,10), m.tipo, m.nome, m.tam, m.qtd,
       m.unit.toFixed(2).replace('.',','), (m.custoUnit||0).toFixed(2).replace('.',','),
@@ -685,7 +856,7 @@ function exportarCsv(){
   const blob = new Blob(['\uFEFF'+csv], { type:'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'oxsygen-movimentos.csv'; a.click();
+  a.href = url; a.download = 'oxsygen-'+iso(f.de)+'-a-'+iso(new Date(f.ate))+'.csv'; a.click();
   setTimeout(()=>URL.revokeObjectURL(url), 1500);
   toast('CSV baixado.');
 }
@@ -694,7 +865,6 @@ function exportarCsv(){
 document.querySelectorAll('.aba').forEach(b => b.addEventListener('click', () => { abaAtual = b.dataset.aba; render(); }));
 document.getElementById('busca').addEventListener('input', e => { termoBusca = e.target.value; renderEstoque(); });
 document.getElementById('novoProduto').addEventListener('click', () => formProduto(null));
-document.getElementById('filtroMes').addEventListener('change', renderResumo);
 
 document.addEventListener('click', async e => {
   const alvo = e.target.closest('[data-acao]');
@@ -709,6 +879,7 @@ document.addEventListener('click', async e => {
   if (acao === 'novaPessoa') formPessoa();
   if (acao === 'salvarPessoa') salvarPessoa(alvo);
   if (acao === 'csv') exportarCsv();
+  if (acao === 'periodo'){ periodo.tipo = alvo.dataset.v; renderResumo(); }
   if (acao === 'salvarProduto') salvarProduto(alvo.dataset.p, alvo);
   if (acao === 'confirmarMov') confirmarMov(alvo.dataset.p, alvo.dataset.t, alvo);
 
