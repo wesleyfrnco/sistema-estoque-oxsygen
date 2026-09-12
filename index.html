@@ -158,6 +158,10 @@ button{cursor:pointer}
 .acesso .btn{margin-top:11px;width:100%;padding:13px}
 .recado{font-size:14px;color:#A8402F;margin-top:13px;min-height:20px}
 
+.sugestao{font-size:12.5px;color:var(--tinta-suave);margin:-4px 0 13px;line-height:1.5}
+.sugestao b{font-weight:500;color:var(--tinta)}
+.sugestao.apertada b{color:var(--ocre)}
+.sugestao button{background:none;border:0;padding:0;font-size:12.5px;color:var(--argila);text-decoration:underline;text-underline-offset:2px}
 .nota{font-size:12.5px;color:var(--tinta-suave);line-height:1.5;margin:22px 0 6px}
 .rodape-usuario{display:flex;align-items:center;gap:10px;margin-top:26px;padding-top:16px;border-top:1px solid var(--linho);font-size:13.5px;color:var(--tinta-suave)}
 .rodape-usuario span{flex:1}
@@ -244,6 +248,10 @@ button{cursor:pointer}
    AJUSTE AQUI: endereço do Worker publicado
    ========================================================== */
 const API = 'https://oxsygen-estoque.insertlan.workers.dev';
+
+/* Markup padrão sobre o custo: 100 = preço é o dobro do custo. */
+const MARKUP = 100;
+const precoSugerido = custo => Math.round(custo * (1 + MARKUP/100) * 100) / 100;
 
 const CHAVE_TOKEN = 'oxsygen.sessao';
 let sessao = null;
@@ -805,12 +813,48 @@ function formProduto(produto){
       '<div class="linha"><label for="f-custo">Custo por peça</label><input id="f-custo" type="number" inputmode="decimal" step="0.01" min="0" value="'+(p.custo||'')+'" placeholder="0,00"></div>'+
       '<div class="linha"><label for="f-preco">Preço de venda</label><input id="f-preco" type="number" inputmode="decimal" step="0.01" min="0" value="'+(p.preco||'')+'" placeholder="0,00"></div>'+
     '</div>'+
+    '<div class="sugestao" id="f-sugestao"></div>'+
     '<div class="linha"><label>Grade de tamanhos</label><div class="grade-edit" id="gradeEdit">'+
       p.grade.map(g => linhaGrade(g.tam,g.qtd)).join('')+'</div>'+
       '<button class="btn fraco largo" data-acao="addTam" type="button">Adicionar tamanho</button></div>'+
     '<div class="rodape"><button class="btn fraco" data-acao="fechar">Cancelar</button>'+
       '<button class="btn" data-acao="salvarProduto" data-p="'+(produto?produto.id:'')+'">Salvar peça</button></div>'
   );
+
+  const campoCusto = folha.querySelector('#f-custo');
+  const campoPreco = folha.querySelector('#f-preco');
+  const dica = folha.querySelector('#f-sugestao');
+  let precoTocado = !!(produto && produto.preco);
+
+  function atualizarDica(){
+    const custo = num(campoCusto.value);
+    const preco = num(campoPreco.value);
+    if (!custo){ dica.innerHTML = ''; return; }
+    const sug = precoSugerido(custo);
+    const margem = preco ? (preco - custo) / preco * 100 : 0;
+    const lucro = preco - custo;
+    let html = 'Sugerido pela regra da loja: <b>'+brl(sug)+'</b>';
+    if (preco && Math.abs(preco - sug) > 0.009)
+      html += ' <button type="button" data-acao="aplicarSugerido">aplicar</button>';
+    if (preco)
+      html += '<br>Margem real <b>'+margem.toFixed(0)+'%</b>, '+brl(lucro)+' de lucro por peça.';
+    dica.className = 'sugestao' + (preco && margem < 40 ? ' apertada' : '');
+    dica.innerHTML = html;
+  }
+
+  campoCusto.addEventListener('input', () => {
+    if (!precoTocado) campoPreco.value = num(campoCusto.value) ? precoSugerido(num(campoCusto.value)).toFixed(2) : '';
+    atualizarDica();
+  });
+  campoPreco.addEventListener('input', () => { precoTocado = true; atualizarDica(); });
+  dica.addEventListener('click', e => {
+    if (e.target.dataset.acao === 'aplicarSugerido'){
+      campoPreco.value = precoSugerido(num(campoCusto.value)).toFixed(2);
+      precoTocado = true;
+      atualizarDica();
+    }
+  });
+  atualizarDica();
 }
 
 async function salvarProduto(idProduto, botao){
