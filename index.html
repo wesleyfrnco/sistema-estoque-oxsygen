@@ -107,6 +107,9 @@ button{cursor:pointer}
 .datas{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .datas input{flex:1;background:#fff;border:1px solid var(--borda);border-radius:11px;padding:9px 11px;min-width:0}
 .datas span{font-size:13px;color:var(--tinta-suave)}
+.tag{display:inline-block;background:var(--argila-fundo);color:var(--argila);border-radius:6px;padding:1px 6px;font-size:11.5px;margin-left:6px;letter-spacing:.03em}
+.selcupom{width:100%;background:#fff;border:1px solid var(--borda);border-radius:11px;padding:9px 11px;margin-bottom:10px}
+.selcupom:focus{outline:2px solid var(--argila);outline-offset:-1px;border-color:transparent}
 .faixa{font-size:12.5px;color:var(--tinta-suave);margin-bottom:14px}
 .delta{display:block;font-size:11.5px;margin-top:3px}
 .delta.sobe{color:var(--oliva)}
@@ -220,6 +223,7 @@ button{cursor:pointer}
   <section id="painel-resumo" class="oculto">
     <div id="areaFiltro"></div>
     <div id="conteudoResumo"></div>
+    <div id="areaCupons"></div>
     <div id="areaEquipe"></div>
     <div id="areaBackup"></div>
   </section>
@@ -243,7 +247,7 @@ const API = 'https://oxsygen-estoque.insertlan.workers.dev';
 
 const CHAVE_TOKEN = 'oxsygen.sessao';
 let sessao = null;
-let estado = { produtos: [], movimentos: [], eu: { nome: '', papel: 'vendedor' } };
+let estado = { produtos: [], movimentos: [], cupons: [], eu: { nome: '', papel: 'vendedor' } };
 let abaAtual = 'estoque';
 let termoBusca = '';
 let equipe = [];
@@ -251,6 +255,8 @@ let semConexao = false;
 let modoInstalacao = false;
 
 const dono = () => estado.eu && estado.eu.papel === 'dono';
+const ORIGENS = { trafego:'Anúncio pago', organico:'Instagram orgânico', influencer:'Influenciadora',
+                  indicacao:'Indicação', recorrente:'Cliente antiga', outro:'Outro' };
 const brl = n => (Number(n) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const num = v => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };
 const inteiro = v => { const n = parseInt(v, 10); return isFinite(n) ? n : 0; };
@@ -474,7 +480,9 @@ function renderVendas(){
     const lucro = (venda && dono() && m.custoUnit != null) ? 'lucro '+brl((m.unit-m.custoUnit)*m.qtd) : '';
     html += '<div class="venda '+(venda?'':'entrada')+'">'+
       '<div class="venda-info"><b>'+esc(m.nome)+' · '+esc(m.tam)+'</b>'+
-      '<span>'+rotulo+' de '+m.qtd+' un · '+dataCurta(m.ts)+(m.usuario ? ' · '+esc(m.usuario) : '')+'</span></div>'+
+      '<span>'+rotulo+' de '+m.qtd+' un · '+dataCurta(m.ts)+(m.usuario ? ' · '+esc(m.usuario) : '')+
+        (m.cupom ? '<i class="tag">'+esc(m.cupom)+'</i>' : '')+
+        (m.origem && ORIGENS[m.origem] ? '<i class="tag">'+ORIGENS[m.origem]+'</i>' : '')+'</span></div>'+
       '<div class="venda-val"><b>'+valor+'</b>'+(lucro ? '<span>'+lucro+'</span>' : '')+'</div>'+
       (dono() && m.tipo !== 'ajuste'
         ? '<button class="remover" data-acao="desfazer" data-m="'+m.id+'" aria-label="Desfazer movimento">×</button>' : '')+
@@ -485,6 +493,8 @@ function renderVendas(){
 
 /* ===== período ===== */
 let periodo = { tipo:'mes', de:'', ate:'' };
+let filtroCupom = '';
+let filtroOrigem = '';
 
 const hojeLocal = () => { const d = new Date(); d.setHours(0,0,0,0); return d; };
 const fimDoDia = d => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
@@ -523,6 +533,9 @@ function vendasNa(f){
   if (!f) return [];
   return estado.movimentos.filter(m => {
     if (m.tipo !== 'venda') return false;
+    if (filtroCupom === '__sem' && m.cupom) return false;
+    if (filtroCupom && filtroCupom !== '__sem' && m.cupom !== filtroCupom) return false;
+    if (filtroOrigem && (m.origem || '') !== filtroOrigem) return false;
     const t = new Date(m.ts).getTime();
     return t >= f.de.getTime() && t <= f.ate.getTime();
   });
@@ -532,7 +545,9 @@ function metricas(vendas){
   const receita = vendas.reduce((s,m)=>s+m.unit*m.qtd,0);
   const pecas   = vendas.reduce((s,m)=>s+m.qtd,0);
   const lucro   = vendas.reduce((s,m)=>s+(m.unit-(m.custoUnit||0))*m.qtd,0);
-  return { receita, pecas, lucro, n:vendas.length,
+  const desconto= vendas.reduce((s,m)=>s+Math.max(0,((m.unitCheio||m.unit)-m.unit))*m.qtd,0);
+  const comissao= vendas.reduce((s,m)=>s+(m.unit*m.qtd)*((m.comissaoPct||0)/100),0);
+  return { receita, pecas, lucro, desconto, comissao, n:vendas.length,
     ticket: vendas.length ? receita/vendas.length : 0,
     margem: receita ? lucro/receita*100 : 0 };
 }
@@ -549,6 +564,14 @@ function cartao(valor, rotulo, comparacao, destaque){
   return '<div class="cartao'+(destaque?' destaque':'')+'"><b>'+valor+'</b><span>'+rotulo+'</span>'+(comparacao||'')+'</div>';
 }
 
+function cuponsConhecidos(){
+  const usados = estado.movimentos.filter(m => m.cupom).map(m => m.cupom);
+  const cadastrados = (estado.cupons || []).map(c => c.codigo);
+  return Array.from(new Set(cadastrados.concat(usados))).sort();
+}
+const cupomAtivos = () => (estado.cupons || []).filter(c => c.ativo);
+const pessoaDo = cod => { const c = (estado.cupons||[]).find(x => x.codigo === cod); return c && c.pessoa ? c.pessoa : ''; };
+
 function renderFiltro(){
   const presets = [['hoje','Hoje'],['7','7 dias'],['30','30 dias'],['mes','Este mês'],
                    ['anterior','Mês passado'],['tudo','Tudo'],['custom','Escolher datas']];
@@ -561,8 +584,23 @@ function renderFiltro(){
       ? '<div class="datas"><input type="date" id="dt-de" value="'+(periodo.de||iso(f.de))+'" aria-label="Data inicial">'+
         '<span>até</span><input type="date" id="dt-ate" value="'+(periodo.ate||iso(new Date(f.ate)))+'" aria-label="Data final"></div>'
       : '')+
+    (cuponsConhecidos().length
+      ? '<select class="selcupom" id="selCupom" aria-label="Cupom">'+
+        [['','Todas as vendas'],['__sem','Sem cupom']].concat(cuponsConhecidos().map(c => [c, c]))
+          .map(([v,r]) => '<option value="'+esc(v)+'"'+(filtroCupom===v?' selected':'')+'>'+esc(r)+'</option>').join('')+
+        '</select>'
+      : '')+
+    '<select class="selcupom" id="selOrigem" aria-label="Origem">'+
+      [['','Todas as origens']].concat(Object.entries(ORIGENS))
+        .map(([v,r]) => '<option value="'+v+'"'+(filtroOrigem===v?' selected':'')+'>'+r+'</option>').join('')+
+      '</select>'+
     '<div class="faixa">'+curta(f.de)+' a '+curta(f.ate)+
       (anterior ? ' · comparando com '+curta(anterior.de)+' a '+curta(anterior.ate) : ' · sem comparação')+'</div>';
+
+  const sc = document.getElementById('selCupom');
+  if (sc) sc.addEventListener('change', e => { filtroCupom = e.target.value; renderResumo(); });
+  const so = document.getElementById('selOrigem');
+  if (so) so.addEventListener('change', e => { filtroOrigem = e.target.value; renderResumo(); });
 
   if (periodo.tipo === 'custom'){
     ['dt-de','dt-ate'].forEach(campo => {
@@ -645,6 +683,18 @@ function renderResumo(){
   const porTam    = agrupar(vendas, m => m.tam);
   const porCor    = agrupar(vendas, m => corDe(m.produtoId));
   const porPessoa = agrupar(vendas, m => m.usuario);
+  const porCupom  = agrupar(vendas, m => m.cupom || 'Sem cupom');
+  const porOrigem = agrupar(vendas, m => ORIGENS[m.origem] || 'Não informada');
+
+  const comissoes = {};
+  vendas.forEach(m => {
+    if (!m.cupom || !m.comissaoPct) return;
+    comissoes[m.cupom] = comissoes[m.cupom] || { qtd:0, val:0, com:0 };
+    comissoes[m.cupom].qtd += m.qtd;
+    comissoes[m.cupom].val += m.unit * m.qtd;
+    comissoes[m.cupom].com += (m.unit * m.qtd) * (m.comissaoPct/100);
+  });
+  const listaComissoes = Object.entries(comissoes).sort((x,y) => y[1].com - x[1].com);
 
   const vendidos = new Set(vendas.map(m => m.produtoId));
   const paradas = estado.produtos
@@ -660,8 +710,21 @@ function renderResumo(){
       cartao(String(a.n), 'vendas registradas', delta(a.n, b&&b.n))+
       cartao(brl(a.ticket), 'ticket médio', delta(a.ticket, b&&b.ticket))+
       (dono() ? cartao(a.margem.toFixed(0)+'%', 'margem média', delta(a.margem, b&&b.margem)) : '')+
+      (a.desconto ? cartao(brl(a.desconto), 'desconto concedido', delta(a.desconto, b&&b.desconto)) : '')+
+      (dono() && a.comissao ? cartao(brl(a.comissao), 'comissões a pagar', delta(a.comissao, b&&b.comissao)) : '')+
+      (dono() && a.comissao ? cartao(brl(a.lucro - a.comissao), 'lucro após comissão') : '')+
     '</div>'+
     grafico(vendas, f)+
+    (dono() && listaComissoes.length
+      ? '<div class="secao">Comissões do período</div>'+listaComissoes.map(([cod,d]) =>
+          '<div class="rank"><span>'+esc(cod)+(pessoaDo(cod)?' · '+esc(pessoaDo(cod)):'')+
+          '</span><i>'+brl(d.val)+'</i><b>'+brl(d.com)+'</b></div>').join('')+
+        '<div class="resumo-linha" style="margin-top:10px">Total a pagar em comissão: <b>'+
+          brl(listaComissoes.reduce((t,[,d])=>t+d.com,0))+'</b></div>'
+      : '')+
+    (porOrigem.length > 1 ? listaRank('Por origem', porOrigem) : '')+
+    (porCupom.length ? '<div class="secao">Por cupom</div>'+porCupom.map(([nome,d]) =>
+      '<div class="rank"><span>'+esc(nome)+'</span><i>'+d.qtd+' un</i><b>'+brl(d.val)+'</b></div>').join('') : '')+
     listaRank('Mais vendidas', porPeca)+
     listaRank('Por tamanho', porTam, 8)+
     listaRank('Por cor', porCor)+
@@ -677,6 +740,19 @@ function renderResumo(){
       ? '<div class="secao">Não saiu no período</div>'+paradas.slice(0,6).map(([nome,d]) =>
           '<div class="rank"><span>'+esc(nome)+'</span><i>'+d.qtd+' un</i><b>'+brl(d.val)+' parados</b></div>').join('')
       : '');
+
+  document.getElementById('areaCupons').innerHTML = dono()
+    ? '<div class="secao">Cupons e comissões</div>'+
+      (cupomAtivos().length
+        ? cupomAtivos().map(c =>
+            '<div class="pessoa"><div><b>'+esc(c.codigo)+'</b><span>'+
+            (c.pessoa ? esc(c.pessoa)+' · ' : '')+'comissão '+c.comissao+'%'+
+            (c.desconto ? ' · desconto '+c.desconto+'%' : '')+'</span></div>'+
+            '<button class="link" data-acao="editarCupom" data-c="'+esc(c.codigo)+'">Editar</button>'+
+            '<button class="remover" data-acao="tirarCupom" data-c="'+esc(c.codigo)+'" aria-label="Desativar cupom">×</button></div>').join('')
+        : '<p class="nota" style="margin-top:0">Nenhum cupom cadastrado.</p>')+
+      '<button class="btn fraco largo" data-acao="novoCupom">Cadastrar cupom</button>'
+    : '';
 
   document.getElementById('areaEquipe').innerHTML = dono()
     ? '<div class="secao">Quem tem acesso</div>'+
@@ -781,10 +857,27 @@ function folhaChip(produto, tam){
       '<div class="linha"><label for="a-qtd" id="rot-qtd">Quantas peças</label><input id="a-qtd" type="number" inputmode="numeric" min="1" value="1"></div>'+
       '<div class="linha" id="box-valor"><label for="a-valor" id="rot-valor">Preço unitário</label><input id="a-valor" type="number" inputmode="decimal" step="0.01" min="0" value="'+produto.preco+'"></div>'+
     '</div>'+
+    '<div class="linha" id="box-cupom"><label for="a-cupom">Cupom</label>'+
+      '<select id="a-cupom"><option value="">Sem cupom</option>'+
+        cupomAtivos().map(c => '<option value="'+esc(c.codigo)+'">'+esc(c.codigo)+
+          (c.pessoa?' · '+esc(c.pessoa):'')+(c.desconto?' ('+c.desconto+'% off)':'')+'</option>').join('')+
+      '</select></div>'+
+    '<div class="linha" id="box-origem"><label for="a-origem">De onde veio a cliente</label>'+
+      '<select id="a-origem"><option value="">Não informado</option>'+
+        Object.entries(ORIGENS).map(([v,r]) => '<option value="'+v+'">'+r+'</option>').join('')+
+      '</select></div>'+
     '<div class="linha"><label for="a-data">Data</label><input id="a-data" type="date" value="'+hoje+'"></div>'+
     '<div class="rodape"><button class="btn fraco" data-acao="fechar">Cancelar</button>'+
       '<button class="btn" data-acao="confirmarMov" data-p="'+produto.id+'" data-t="'+esc(tam)+'">Registrar</button></div>'
   );
+  const selCup = folha.querySelector('#a-cupom');
+  if (selCup) selCup.addEventListener('change', () => {
+    const c = cupomAtivos().find(x => x.codigo === selCup.value);
+    if (c && c.desconto) folha.querySelector('#a-valor').value = (produto.preco * (1 - c.desconto/100)).toFixed(2);
+    else if (folha.querySelector('#a-tipo').value === 'venda') folha.querySelector('#a-valor').value = produto.preco;
+    if (c) folha.querySelector('#a-origem').value = 'influencer';
+  });
+
   const tipo = folha.querySelector('#a-tipo');
   tipo.addEventListener('change', () => {
     const v = tipo.value;
@@ -792,12 +885,15 @@ function folhaChip(produto, tam){
     folha.querySelector('#a-qtd').value = v === 'ajuste' ? item.qtd : 1;
     folha.querySelector('#a-qtd').min = v === 'ajuste' ? 0 : 1;
     folha.querySelector('#box-valor').classList.toggle('oculto', v === 'ajuste');
+    folha.querySelector('#box-cupom').classList.toggle('oculto', v !== 'venda');
+    folha.querySelector('#box-origem').classList.toggle('oculto', v !== 'venda');
     folha.querySelector('#rot-valor').textContent = v === 'venda' ? 'Preço unitário' : 'Custo unitário';
     folha.querySelector('#a-valor').value = v === 'venda' ? produto.preco : (produto.custo || 0);
   });
 }
 
 async function confirmarMov(idProduto, tam, botao){
+  const produto = estado.produtos.find(x => x.id === idProduto);
   const tipo = folha.querySelector('#a-tipo').value;
   const qtd = inteiro(folha.querySelector('#a-qtd').value);
   const valor = num(folha.querySelector('#a-valor').value);
@@ -806,11 +902,51 @@ async function confirmarMov(idProduto, tam, botao){
 
   botao.disabled = true;
   try {
-    await api('/api/movimentos', { method:'POST', corpo:{ tipo, produtoId:idProduto, tam, qtd, valor, ts } });
+    const campoCupom = folha.querySelector('#a-cupom');
+    const campoOrigem = folha.querySelector('#a-origem');
+    const cupom = campoCupom ? campoCupom.value.trim().toUpperCase().replace(/\s+/g,'') : '';
+    await api('/api/movimentos', { method:'POST',
+      corpo:{ tipo, produtoId:idProduto, tam, qtd, valor, ts, cupom,
+              origem: campoOrigem ? campoOrigem.value : '', unitCheio: produto.preco } });
     await carregarEstado();
     fecharFolha(); render();
     toast(tipo === 'venda' ? 'Venda de '+brl(valor*qtd)+' registrada.'
       : tipo === 'entrada' ? 'Entrada de '+qtd+' peças.' : 'Saldo corrigido.');
+  } catch(e){ toast(e.message); botao.disabled = false; }
+}
+
+function formCupom(codigo){
+  const c = (estado.cupons || []).find(x => x.codigo === codigo) || { codigo:'', pessoa:'', comissao:'', desconto:'' };
+  abrirFolha(
+    '<h2>'+(codigo?'Editar cupom':'Novo cupom')+'</h2>'+
+    '<p class="dica">A comissão é congelada no momento de cada venda. Se você renegociar depois, as vendas antigas mantêm o percentual antigo.</p>'+
+    '<div class="linha"><label for="c-cod">Código</label><input id="c-cod" value="'+esc(c.codigo)+'" '+
+      (codigo?'disabled':'')+' placeholder="GABI10"></div>'+
+    '<div class="linha"><label for="c-pessoa">Quem divulga</label><input id="c-pessoa" value="'+esc(c.pessoa)+'" placeholder="Gabi"></div>'+
+    '<div class="duo">'+
+      '<div class="linha"><label for="c-com">Comissão %</label><input id="c-com" type="number" inputmode="decimal" step="0.5" min="0" max="100" value="'+(c.comissao||'')+'" placeholder="10"></div>'+
+      '<div class="linha"><label for="c-desc">Desconto %</label><input id="c-desc" type="number" inputmode="decimal" step="0.5" min="0" max="100" value="'+(c.desconto||'')+'" placeholder="10"></div>'+
+    '</div>'+
+    '<p class="nota" style="margin-top:0">A comissão incide sobre o valor efetivamente pago pela cliente. O desconto é aplicado sozinho no preço quando o cupom é escolhido na venda.</p>'+
+    '<div class="rodape"><button class="btn fraco" data-acao="fechar">Cancelar</button>'+
+      '<button class="btn" data-acao="salvarCupom" data-c="'+esc(codigo||'')+'">Salvar cupom</button></div>'
+  );
+}
+
+async function salvarCupom(codigo, botao){
+  const corpo = {
+    codigo: codigo || folha.querySelector('#c-cod').value,
+    pessoa: folha.querySelector('#c-pessoa').value,
+    comissao: num(folha.querySelector('#c-com').value),
+    desconto: num(folha.querySelector('#c-desc').value)
+  };
+  if (!String(corpo.codigo).trim()){ toast('Informe o código do cupom.'); return; }
+  botao.disabled = true;
+  try {
+    await api('/api/cupons', { method:'POST', corpo });
+    await carregarEstado();
+    fecharFolha(); render();
+    toast('Cupom salvo.');
   } catch(e){ toast(e.message); botao.disabled = false; }
 }
 
@@ -841,15 +977,20 @@ async function salvarPessoa(botao){
 
 /* ===== CSV ===== */
 function exportarCsv(){
-  const linhas = [['data','tipo','peca','tamanho','quantidade','valor_unitario','custo_unitario','lucro','usuario']];
+  const linhas = [['data','tipo','peca','tamanho','quantidade','preco_tabela','valor_unitario','desconto','cupom','comissao','origem','custo_unitario','lucro','usuario']];
   const f = faixaAtual();
   estado.movimentos.filter(m => {
     const t = new Date(m.ts).getTime();
     return t >= f.de.getTime() && t <= f.ate.getTime();
   }).sort((a,b)=>a.ts.localeCompare(b.ts)).forEach(m => {
     const lucro = m.tipo === 'venda' ? (m.unit-(m.custoUnit||0))*m.qtd : 0;
+    const desc = Math.max(0, ((m.unitCheio||m.unit) - m.unit)) * m.qtd;
     linhas.push([m.ts.slice(0,10), m.tipo, m.nome, m.tam, m.qtd,
-      m.unit.toFixed(2).replace('.',','), (m.custoUnit||0).toFixed(2).replace('.',','),
+      (m.unitCheio||m.unit).toFixed(2).replace('.',','), m.unit.toFixed(2).replace('.',','),
+      desc.toFixed(2).replace('.',','), m.cupom||'',
+      ((m.unit*m.qtd)*((m.comissaoPct||0)/100)).toFixed(2).replace('.',','),
+      ORIGENS[m.origem]||'',
+      (m.custoUnit||0).toFixed(2).replace('.',','),
       lucro.toFixed(2).replace('.',','), m.usuario||'']);
   });
   const csv = linhas.map(l => l.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(';')).join('\n');
@@ -877,6 +1018,15 @@ document.addEventListener('click', async e => {
   if (acao === 'editar' && produto) formProduto(produto);
   if (acao === 'fechar') fecharFolha();
   if (acao === 'novaPessoa') formPessoa();
+  if (acao === 'novoCupom') formCupom('');
+  if (acao === 'editarCupom') formCupom(alvo.dataset.c);
+  if (acao === 'salvarCupom') salvarCupom(alvo.dataset.c, alvo);
+  if (acao === 'tirarCupom'){
+    if (!confirm('Desativar o cupom '+alvo.dataset.c+'? As vendas já registradas continuam no histórico.')) return;
+    try { await api('/api/cupons/'+encodeURIComponent(alvo.dataset.c), { method:'DELETE' });
+          await carregarEstado(); render(); toast('Cupom desativado.'); }
+    catch(err){ toast(err.message); }
+  }
   if (acao === 'salvarPessoa') salvarPessoa(alvo);
   if (acao === 'csv') exportarCsv();
   if (acao === 'periodo'){ periodo.tipo = alvo.dataset.v; renderResumo(); }
