@@ -158,6 +158,14 @@ button{cursor:pointer}
 .acesso .btn{margin-top:11px;width:100%;padding:13px}
 .recado{font-size:14px;color:#A8402F;margin-top:13px;min-height:20px}
 
+.item-nf{background:#fff;border:1px solid var(--borda);border-radius:12px;padding:12px;margin-bottom:9px}
+.item-nf .orig{font-size:11.5px;color:var(--tinta-suave);margin-bottom:8px;word-break:break-word}
+.item-nf .trio{display:flex;gap:7px}
+.item-nf input{background:var(--areia);border:1px solid var(--borda);border-radius:9px;padding:8px 10px;width:100%;font-size:14.5px;min-width:0}
+.item-nf input:focus{outline:2px solid var(--argila);outline-offset:-1px}
+.item-nf .rot{font-size:11px;color:var(--tinta-suave);display:block;margin:7px 0 3px}
+.item-nf.fora{opacity:.45}
+.resumo-nf{background:var(--linho);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:14px}
 .sugestao{font-size:12.5px;color:var(--tinta-suave);margin:-4px 0 13px;line-height:1.5}
 .sugestao b{font-weight:500;color:var(--tinta)}
 .sugestao.apertada b{color:var(--ocre)}
@@ -218,6 +226,8 @@ button{cursor:pointer}
       <input class="campo" id="busca" type="search" placeholder="Buscar peça ou cor" autocomplete="off">
       <button class="btn oculto" id="novoProduto">Nova peça</button>
     </div>
+    <div id="linhaImportar"></div>
+    <input type="file" id="arquivoNf" accept=".xml,text/xml,application/xml" class="oculto">
     <div id="alertaBaixo"></div>
     <div id="listaProdutos"></div>
   </section>
@@ -436,6 +446,10 @@ function renderEstoque(){
   document.getElementById('alertaBaixo').innerHTML = baixos.length
     ? '<div class="alerta"><b>Repor</b><span>' + esc(baixos.slice(0,8).join(' · ')) +
       (baixos.length>8 ? ' e mais '+(baixos.length-8) : '') + '</span></div>' : '';
+
+  document.getElementById('linhaImportar').innerHTML = dono()
+    ? '<p class="nota" style="margin:-6px 0 14px"><button class="link" data-acao="importarNf">Importar XML da nota fiscal</button></p>'
+    : '';
 
   const termo = termoBusca.trim().toLowerCase();
   const filtrados = estado.produtos.filter(p => !termo || (p.nome+' '+p.cor).toLowerCase().includes(termo));
@@ -788,6 +802,174 @@ function render(){
   if (abaAtual === 'resumo') renderResumo();
 }
 
+/* ===== importação de NF-e ===== */
+const TAMANHOS = ['PP','P','M','G','GG','XG','XGG','EG','U','UN','UNICO','ÚNICO'];
+const ABREV_COR = { PT:'Preto', PRETA:'Preto', PRETO:'Preto', BR:'Branco', BRANCA:'Branco', BRANCO:'Branco',
+  OFW:'Off white', OFF:'Off white', NU:'Nude', BG:'Bege', CR:'Creme', CZ:'Cinza', CHUMBO:'Chumbo',
+  MR:'Marrom', CAF:'Café', VH:'Vinho', VN:'Vinho', RS:'Rosa', ROSE:'Rosé', ROSA:'Rosa',
+  VD:'Verde', VM:'Vermelho', AZ:'Azul', MAR:'Marinho', LI:'Lilás', AM:'Amarelo', TER:'Terracota' };
+let itensNf = [];
+let cabecalhoNf = {};
+let mapaItens = {};
+
+function classificar(desc, cprod){
+  const salvo = mapaItens[cprod];
+  if (salvo) return { nome: salvo.nome, cor: salvo.cor, tam: salvo.tam, conhecido: true };
+
+  const bruto = String(desc || '').replace(/\s+/g, ' ').trim();
+  let partes = bruto.split(/[\s\-\/]+/);
+  let tam = '', cor = '';
+
+  for (let i = partes.length - 1; i >= 0 && i >= partes.length - 3; i--) {
+    const t = partes[i].toUpperCase().replace(/[^\wÁÉÍÓÚÂÊÔÃÕÇ]/g, '');
+    if (!tam && (TAMANHOS.includes(t) || /^(3[4-9]|4[0-9]|5[0-2])$/.test(t))){
+      tam = t === 'UNICO' || t === 'ÚNICO' || t === 'UN' ? 'U' : t;
+      partes.splice(i, 1);
+      continue;
+    }
+    if (!cor && ABREV_COR[t]){ cor = ABREV_COR[t]; partes.splice(i, 1); }
+  }
+  if (!cor){
+    for (let i = partes.length - 1; i >= 0; i--){
+      const t = partes[i].toUpperCase();
+      if (ABREV_COR[t]){ cor = ABREV_COR[t]; partes.splice(i, 1); break; }
+    }
+  }
+  const nome = partes.join(' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+  return { nome, cor, tam, conhecido: false };
+}
+
+function lerXml(texto){
+  const doc = new DOMParser().parseFromString(texto, 'text/xml');
+  if (doc.querySelector('parsererror')) throw new Error('Arquivo XML inválido.');
+  const pega = (no, tag) => {
+    const el = no.getElementsByTagNameNS('*', tag)[0];
+    return el ? el.textContent.trim() : '';
+  };
+  const infNFe = doc.getElementsByTagNameNS('*','infNFe')[0];
+  if (!infNFe) throw new Error('Isso não parece um XML de NF-e.');
+  const ide = doc.getElementsByTagNameNS('*','ide')[0];
+  const emit = doc.getElementsByTagNameNS('*','emit')[0];
+
+  cabecalhoNf = {
+    chave: (infNFe.getAttribute('Id') || '').replace(/\D/g, ''),
+    numero: ide ? pega(ide, 'nNF') : '',
+    emitente: emit ? (pega(emit, 'xNome') || pega(emit, 'xFant')) : ''
+  };
+
+  const dets = Array.from(doc.getElementsByTagNameNS('*','det'));
+  if (!dets.length) throw new Error('A nota não tem itens.');
+
+  return dets.map(det => {
+    const prod = det.getElementsByTagNameNS('*','prod')[0];
+    const qtd = Math.round(parseFloat(pega(prod,'qCom') || '0'));
+    const vProd = parseFloat(pega(prod,'vProd') || '0');
+    const vFrete = parseFloat(pega(prod,'vFrete') || '0');
+    const vOutro = parseFloat(pega(prod,'vOutro') || '0');
+    const vSeg = parseFloat(pega(prod,'vSeg') || '0');
+    const vDesc = parseFloat(pega(prod,'vDesc') || '0');
+    const cprod = pega(prod,'cProd');
+    const desc = pega(prod,'xProd');
+    const custoSimples = qtd ? vProd / qtd : 0;
+    const custoCheio = qtd ? (vProd + vFrete + vOutro + vSeg - vDesc) / qtd : 0;
+    const c = classificar(desc, cprod);
+    return { cprod, desc, qtd,
+      custoSimples: Math.round(custoSimples*100)/100,
+      custoCheio: Math.round(custoCheio*100)/100,
+      custo: Math.round(custoCheio*100)/100,
+      nome: c.nome, cor: c.cor, tam: c.tam, conhecido: c.conhecido,
+      preco: precoSugerido(Math.round(custoCheio*100)/100), usar: true };
+  });
+}
+
+function precoAtualDe(nome, cor){
+  const p = estado.produtos.find(x =>
+    x.nome.toLowerCase() === String(nome).toLowerCase() &&
+    (x.cor||'').toLowerCase() === String(cor||'').toLowerCase());
+  return p ? p.preco : null;
+}
+
+function folhaImportacao(){
+  const pecas = itensNf.filter(i => i.usar).reduce((s,i) => s+i.qtd, 0);
+  const total = itensNf.filter(i => i.usar).reduce((s,i) => s+i.custo*i.qtd, 0);
+  const faltando = itensNf.filter(i => i.usar && (!i.nome || !i.tam)).length;
+
+  abrirFolha(
+    '<h2>Conferir a nota</h2>'+
+    '<p class="dica">Nota '+esc(cabecalhoNf.numero||'sem número')+
+      (cabecalhoNf.emitente ? ' · '+esc(cabecalhoNf.emitente) : '')+'</p>'+
+    '<div class="resumo-nf">'+itensNf.filter(i=>i.usar).length+' itens · '+pecas+' peças · '+
+      brl(total)+' de custo'+(faltando ? '<br><b>'+faltando+' item(ns) sem peça ou tamanho. Preencha ou desmarque.</b>' : '')+'</div>'+
+    itensNf.map((it,i) =>
+      '<div class="item-nf'+(it.usar?'':' fora')+'">'+
+        '<div class="orig">'+esc(it.desc)+(it.conhecido ? ' · já classificado antes' : '')+'</div>'+
+        '<input data-nf="nome" data-i="'+i+'" value="'+esc(it.nome)+'" placeholder="Nome da peça">'+
+        '<div class="trio">'+
+          '<div style="flex:2"><span class="rot">Cor</span><input data-nf="cor" data-i="'+i+'" value="'+esc(it.cor)+'"></div>'+
+          '<div style="flex:1"><span class="rot">Tam</span><input data-nf="tam" data-i="'+i+'" value="'+esc(it.tam)+'"></div>'+
+          '<div style="flex:1"><span class="rot">Qtd</span><input data-nf="qtd" data-i="'+i+'" type="number" min="0" value="'+it.qtd+'"></div>'+
+        '</div>'+
+        '<div class="trio">'+
+          '<div style="flex:1"><span class="rot">Custo</span><input data-nf="custo" data-i="'+i+'" type="number" step="0.01" value="'+it.custo+'"></div>'+
+          '<div style="flex:1"><span class="rot">Preço de venda</span><input data-nf="preco" data-i="'+i+'" type="number" step="0.01" value="'+it.preco+'"></div>'+
+          '<div style="flex:none;display:flex;align-items:flex-end">'+
+            '<button class="remover" data-acao="alternarItem" data-i="'+i+'" aria-label="Incluir ou ignorar">'+(it.usar?'×':'+')+'</button></div>'+
+        '</div>'+
+      '</div>').join('')+
+    '<div class="rodape"><button class="btn fraco" data-acao="fechar">Cancelar</button>'+
+      '<button class="btn" data-acao="confirmarImport">Lançar no estoque</button></div>'
+  );
+
+  folha.querySelectorAll('[data-nf]').forEach(campo => {
+    campo.addEventListener('input', e => {
+      const i = +e.target.dataset.i, chave = e.target.dataset.nf;
+      itensNf[i][chave] = ['qtd'].includes(chave) ? inteiro(e.target.value)
+        : (['custo','preco'].includes(chave) ? num(e.target.value) : e.target.value);
+      if (chave === 'custo') {
+        const atual = precoAtualDe(itensNf[i].nome, itensNf[i].cor);
+        itensNf[i].preco = atual != null ? atual : precoSugerido(itensNf[i].custo);
+        const campoPreco = folha.querySelector('[data-nf="preco"][data-i="'+i+'"]');
+        if (campoPreco) campoPreco.value = itensNf[i].preco;
+      }
+    });
+  });
+}
+
+async function abrirNf(arquivo){
+  try {
+    if (dono()) {
+      try {
+        const r = await api('/api/mapa');
+        mapaItens = {};
+        (r.mapa || []).forEach(m => { mapaItens[m.cprod] = { nome:m.nome, cor:m.cor, tam:m.tam }; });
+      } catch(e){ mapaItens = {}; }
+    }
+    const texto = await arquivo.text();
+    itensNf = lerXml(texto);
+    itensNf.forEach(it => {
+      const atual = precoAtualDe(it.nome, it.cor);
+      if (atual != null) it.preco = atual;
+    });
+    folhaImportacao();
+  } catch(e){ toast(e.message); }
+}
+
+async function confirmarImport(botao){
+  const itens = itensNf.filter(i => i.usar && i.nome && i.tam && i.qtd > 0);
+  if (!itens.length){ toast('Nenhum item válido para lançar.'); return; }
+  botao.disabled = true;
+  try {
+    const r = await api('/api/importar', { method:'POST', corpo:{
+      chave: cabecalhoNf.chave, numero: cabecalhoNf.numero, emitente: cabecalhoNf.emitente,
+      itens: itens.map(i => ({ cprod:i.cprod, nome:i.nome, cor:i.cor, corHex: corHex(i.cor),
+        tam:i.tam, qtd:i.qtd, custo:i.custo, preco:i.preco }))
+    }});
+    await carregarEstado();
+    fecharFolha(); render();
+    toast(r.pecas+' peças lançadas · '+r.criados+' peças novas.');
+  } catch(e){ toast(e.message); botao.disabled = false; }
+}
+
 /* ===== formulários ===== */
 const CORES = {preto:'#2E2724',branco:'#F7F4F0',nude:'#DDC3B2','rosé':'#D9A9A3',rose:'#D9A9A3',cinza:'#B6B0AB',verde:'#4F7A63',vinho:'#7B3242',azul:'#3D5A78',marrom:'#8A6A52','off white':'#EFE8E0',terracota:'#B0674F'};
 const corHex = n => CORES[String(n||'').trim().toLowerCase()] || '#DDD2CA';
@@ -1050,6 +1232,11 @@ function exportarCsv(){
 document.querySelectorAll('.aba').forEach(b => b.addEventListener('click', () => { abaAtual = b.dataset.aba; render(); }));
 document.getElementById('busca').addEventListener('input', e => { termoBusca = e.target.value; renderEstoque(); });
 document.getElementById('novoProduto').addEventListener('click', () => formProduto(null));
+document.getElementById('arquivoNf').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) abrirNf(f);
+  e.target.value = '';
+});
 
 document.addEventListener('click', async e => {
   const alvo = e.target.closest('[data-acao]');
@@ -1062,6 +1249,13 @@ document.addEventListener('click', async e => {
   if (acao === 'editar' && produto) formProduto(produto);
   if (acao === 'fechar') fecharFolha();
   if (acao === 'novaPessoa') formPessoa();
+  if (acao === 'importarNf') document.getElementById('arquivoNf').click();
+  if (acao === 'confirmarImport') confirmarImport(alvo);
+  if (acao === 'alternarItem'){
+    const i = +alvo.dataset.i;
+    itensNf[i].usar = !itensNf[i].usar;
+    folhaImportacao();
+  }
   if (acao === 'novoCupom') formCupom('');
   if (acao === 'editarCupom') formCupom(alvo.dataset.c);
   if (acao === 'salvarCupom') salvarCupom(alvo.dataset.c, alvo);
