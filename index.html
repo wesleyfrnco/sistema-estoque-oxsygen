@@ -54,6 +54,7 @@ button{cursor:pointer}
 .produto{background:#fff;border:1px solid var(--borda);border-radius:var(--raio);padding:15px 15px 13px;margin-bottom:12px}
 .produto-topo{display:flex;align-items:flex-start;gap:12px;margin-bottom:13px}
 .produto-nome{font-size:17px;font-weight:500;line-height:1.2}
+.refcod{font-weight:600;letter-spacing:.02em}
 .produto-meta{font-size:13px;color:var(--tinta-suave);margin-top:3px}
 .produto-preco{margin-left:auto;text-align:right;flex:none;line-height:1.25}
 .produto-preco b{font-weight:400;font-size:16px}
@@ -223,7 +224,7 @@ button{cursor:pointer}
 
   <section id="painel-estoque">
     <div class="barra">
-      <input class="campo" id="busca" type="search" placeholder="Buscar peça ou cor" autocomplete="off">
+      <input class="campo" id="busca" type="search" placeholder="Buscar peça, cor ou referência" autocomplete="off">
       <button class="btn oculto" id="novoProduto">Nova peça</button>
     </div>
     <div id="linhaImportar"></div>
@@ -452,7 +453,7 @@ function renderEstoque(){
     : '';
 
   const termo = termoBusca.trim().toLowerCase();
-  const filtrados = estado.produtos.filter(p => !termo || (p.nome+' '+p.cor).toLowerCase().includes(termo));
+  const filtrados = estado.produtos.filter(p => !termo || (p.nome+' '+p.cor+' '+(p.ref||'')+' '+p.grade.map(g=>(g.sku||'')+' '+(g.ean||'')).join(' ')).toLowerCase().includes(termo));
 
   if (!estado.produtos.length){
     lista.innerHTML = '<div class="vazio"><p>Nenhuma peça cadastrada ainda.</p>' +
@@ -473,7 +474,7 @@ function renderEstoque(){
     }).join('');
     return '<article class="produto"><div class="produto-topo"><div>'+
       '<div class="produto-nome">'+esc(p.nome)+'</div>'+
-      '<div class="produto-meta">'+(p.cor ? '<i class="cor" style="background:'+esc(p.corHex||'#DDD2CA')+'"></i>'+esc(p.cor)+' · ' : '')+
+      '<div class="produto-meta">'+(p.cor ? '<i class="cor" style="background:'+esc(p.corHex||'#DDD2CA')+'"></i>'+esc(p.cor)+' · ' : '')+(p.ref ? '<span class="refcod">'+esc(p.ref)+'</span> · ' : '')+
         totalProduto(p)+' em estoque</div></div>'+
       '<div class="produto-preco"><b>'+brl(p.preco)+'</b>'+
         (dono() ? '<span>custo '+brl(p.custo)+'</span>' : '')+'</div></div>'+
@@ -812,14 +813,40 @@ let itensNf = [];
 let cabecalhoNf = {};
 let mapaItens = {};
 
+const CORES_FORN = {'003':'Preto','170':'Eclipse','189':'Barollo','192':'Coffee','193':'Natural','194':'Verdinho','196':'Grape',
+  'V22':'Verdinho/Natural','V23':'Eclipse/Natural','V24':'Coffee/Natural','V25':'Preto/Natural'};
+const capitaliza = t => t.toLowerCase().replace(/^./, c => c.toUpperCase());
+const tituloCor = t => t.toLowerCase().replace(/(^|\/)(\S)/g, (m, a, c) => a + c.toUpperCase());
+
+// cProd do fornecedor: REF.TAM.CODCOR (ex.: F1003.M.V23)
+function lerCprod(cprod){
+  const m = String(cprod||'').trim().toUpperCase().match(/^([A-Z0-9]+)\.([A-Z]{1,3})\.([A-Z0-9]+)$/);
+  if (!m || !TAMANHOS.includes(m[2])) return null;
+  return { ref: m[1], tam: m[2], corCod: m[3] };
+}
+
 function classificar(desc, cprod){
   const salvo = mapaItens[cprod];
-  if (salvo) return { nome: salvo.nome, cor: salvo.cor, tam: salvo.tam, conhecido: true };
+  const k = lerCprod(cprod);
+  if (salvo) return { nome: salvo.nome, cor: salvo.cor, tam: salvo.tam,
+    ref: k ? k.ref : '', corCod: k ? k.corCod : '', conhecido: true };
 
+  if (k){
+    const palavras = String(desc||'').replace(/\s+/g,' ').trim().split(' ');
+    let pos = -1;
+    for (let i = palavras.length - 1; i >= 0 && i >= palavras.length - 3; i--){
+      if (palavras[i].toUpperCase().replace(/[^A-ZÁÉÍÓÚÂÊÔÃÕÇ]/g,'') === k.tam){ pos = i; break; }
+    }
+    const nomeBruto = pos > 0 ? palavras.slice(0, pos).join(' ') : palavras.join(' ');
+    const corTexto = pos >= 0 ? palavras.slice(pos + 1).join(' ') : '';
+    const cor = CORES_FORN[k.corCod] || (corTexto ? tituloCor(corTexto) : '');
+    return { nome: capitaliza(nomeBruto), cor, tam: k.tam, ref: k.ref, corCod: k.corCod, conhecido: false };
+  }
+
+  // código fora do padrão: heurística antiga
   const bruto = String(desc || '').replace(/\s+/g, ' ').trim();
   let partes = bruto.split(/[\s\-\/]+/);
   let tam = '', cor = '';
-
   for (let i = partes.length - 1; i >= 0 && i >= partes.length - 3; i--) {
     const t = partes[i].toUpperCase().replace(/[^\wÁÉÍÓÚÂÊÔÃÕÇ]/g, '');
     if (!tam && (TAMANHOS.includes(t) || /^(3[4-9]|4[0-9]|5[0-2])$/.test(t))){
@@ -835,8 +862,7 @@ function classificar(desc, cprod){
       if (ABREV_COR[t]){ cor = ABREV_COR[t]; partes.splice(i, 1); break; }
     }
   }
-  const nome = partes.join(' ').toLowerCase().replace(/^./, c => c.toUpperCase());
-  return { nome, cor, tam, conhecido: false };
+  return { nome: capitaliza(partes.join(' ')), cor, tam, ref: '', corCod: '', conhecido: false };
 }
 
 function lerXml(texto){
@@ -869,40 +895,46 @@ function lerXml(texto){
     const vSeg = parseFloat(pega(prod,'vSeg') || '0');
     const vDesc = parseFloat(pega(prod,'vDesc') || '0');
     const cprod = pega(prod,'cProd');
+    const eanBruto = pega(prod,'cEAN').replace(/\D/g,'');
+    const ean = eanBruto.length >= 8 && eanBruto.length <= 14 ? eanBruto : '';
     const desc = pega(prod,'xProd');
     const custoSimples = qtd ? vProd / qtd : 0;
     const custoCheio = qtd ? (vProd + vFrete + vOutro + vSeg - vDesc) / qtd : 0;
     const c = classificar(desc, cprod);
-    return { cprod, desc, qtd,
+    const custo = Math.round(custoCheio*100)/100;
+    return { cprod, ean, desc, qtd,
       custoSimples: Math.round(custoSimples*100)/100,
-      custoCheio: Math.round(custoCheio*100)/100,
-      custo: Math.round(custoCheio*100)/100,
-      nome: c.nome, cor: c.cor, tam: c.tam, conhecido: c.conhecido,
-      preco: precoSugerido(Math.round(custoCheio*100)/100), usar: true };
+      custoCheio: custo, custo,
+      nome: c.nome, cor: c.cor, tam: c.tam, ref: c.ref, corCod: c.corCod, conhecido: c.conhecido,
+      preco: precoSugerido(custo), usar: true };
   });
 }
 
-function precoAtualDe(nome, cor){
-  const p = estado.produtos.find(x =>
-    x.nome.toLowerCase() === String(nome).toLowerCase() &&
-    (x.cor||'').toLowerCase() === String(cor||'').toLowerCase());
-  return p ? p.preco : null;
+function produtoExistente(it){
+  const lista = estado.produtos;
+  return (it.ref && lista.find(x => x.ref === it.ref && (x.corCod||'') === (it.corCod||'')))
+    || lista.find(x => x.nome.toLowerCase() === String(it.nome).toLowerCase() &&
+         (x.cor||'').toLowerCase() === String(it.cor||'').toLowerCase())
+    || null;
 }
+
+function precoAtualDe(it){ const p = produtoExistente(it); return p ? p.preco : null; }
 
 function folhaImportacao(){
   const pecas = itensNf.filter(i => i.usar).reduce((s,i) => s+i.qtd, 0);
   const total = itensNf.filter(i => i.usar).reduce((s,i) => s+i.custo*i.qtd, 0);
   const faltando = itensNf.filter(i => i.usar && (!i.nome || !i.tam)).length;
+  const distintos = new Set(itensNf.filter(i => i.usar).map(i => (i.ref||i.nome)+'|'+(i.corCod||i.cor))).size;
 
   abrirFolha(
     '<h2>Conferir a nota</h2>'+
     '<p class="dica">Nota '+esc(cabecalhoNf.numero||'sem número')+
       (cabecalhoNf.emitente ? ' · '+esc(cabecalhoNf.emitente) : '')+'</p>'+
-    '<div class="resumo-nf">'+itensNf.filter(i=>i.usar).length+' itens · '+pecas+' peças · '+
+    '<div class="resumo-nf">'+itensNf.filter(i=>i.usar).length+' itens · '+distintos+' peças/cores · '+pecas+' peças · '+
       brl(total)+' de custo'+(faltando ? '<br><b>'+faltando+' item(ns) sem peça ou tamanho. Preencha ou desmarque.</b>' : '')+'</div>'+
     itensNf.map((it,i) =>
       '<div class="item-nf'+(it.usar?'':' fora')+'">'+
-        '<div class="orig">'+esc(it.desc)+(it.conhecido ? ' · já classificado antes' : '')+'</div>'+
+        '<div class="orig">'+(it.ref ? '<b>'+esc(it.ref)+'</b> · cor '+esc(it.corCod)+' · ' : '')+esc(it.desc)+(it.conhecido ? ' · já classificado antes' : '')+'</div>'+
         '<input data-nf="nome" data-i="'+i+'" value="'+esc(it.nome)+'" placeholder="Nome da peça">'+
         '<div class="trio">'+
           '<div style="flex:2"><span class="rot">Cor</span><input data-nf="cor" data-i="'+i+'" value="'+esc(it.cor)+'"></div>'+
@@ -926,7 +958,7 @@ function folhaImportacao(){
       itensNf[i][chave] = ['qtd'].includes(chave) ? inteiro(e.target.value)
         : (['custo','preco'].includes(chave) ? num(e.target.value) : e.target.value);
       if (chave === 'custo') {
-        const atual = precoAtualDe(itensNf[i].nome, itensNf[i].cor);
+        const atual = precoAtualDe(itensNf[i]);
         itensNf[i].preco = atual != null ? atual : precoSugerido(itensNf[i].custo);
         const campoPreco = folha.querySelector('[data-nf="preco"][data-i="'+i+'"]');
         if (campoPreco) campoPreco.value = itensNf[i].preco;
@@ -947,7 +979,7 @@ async function abrirNf(arquivo){
     const texto = await arquivo.text();
     itensNf = lerXml(texto);
     itensNf.forEach(it => {
-      const atual = precoAtualDe(it.nome, it.cor);
+      const atual = precoAtualDe(it);
       if (atual != null) it.preco = atual;
     });
     folhaImportacao();
@@ -961,7 +993,7 @@ async function confirmarImport(botao){
   try {
     const r = await api('/api/importar', { method:'POST', corpo:{
       chave: cabecalhoNf.chave, numero: cabecalhoNf.numero, emitente: cabecalhoNf.emitente,
-      itens: itens.map(i => ({ cprod:i.cprod, nome:i.nome, cor:i.cor, corHex: corHex(i.cor),
+      itens: itens.map(i => ({ cprod:i.cprod, ref:i.ref, corCod:i.corCod, sku:i.cprod, ean:i.ean, nome:i.nome, cor:i.cor, corHex: corHex(i.cor),
         tam:i.tam, qtd:i.qtd, custo:i.custo, preco:i.preco }))
     }});
     await carregarEstado();
@@ -971,8 +1003,8 @@ async function confirmarImport(botao){
 }
 
 /* ===== formulários ===== */
-const CORES = {preto:'#2E2724',branco:'#F7F4F0',nude:'#DDC3B2','rosé':'#D9A9A3',rose:'#D9A9A3',cinza:'#B6B0AB',verde:'#4F7A63',vinho:'#7B3242',azul:'#3D5A78',marrom:'#8A6A52','off white':'#EFE8E0',terracota:'#B0674F'};
-const corHex = n => CORES[String(n||'').trim().toLowerCase()] || '#DDD2CA';
+const CORES = {preto:'#2E2724',branco:'#F7F4F0',nude:'#DDC3B2','rosé':'#D9A9A3',rose:'#D9A9A3',cinza:'#B6B0AB',verde:'#4F7A63',vinho:'#7B3242',azul:'#3D5A78',marrom:'#8A6A52','off white':'#EFE8E0',terracota:'#B0674F',eclipse:'#3B3F4A',barollo:'#7A2E3A',coffee:'#6B4A3A',verdinho:'#8FA67E',grape:'#6A4A7A',natural:'#E8DCC8'};
+const corHex = n => { const k = String(n||'').trim().toLowerCase(); return CORES[k] || CORES[k.split('/')[0].trim()] || '#DDD2CA'; };
 
 function linhaGrade(tam, qtd){
   return '<div class="grade-linha">'+
@@ -987,6 +1019,7 @@ function formProduto(produto){
     '<h2>'+(produto?'Editar peça':'Nova peça')+'</h2>'+
     '<p class="dica">'+(produto?'Alterar o custo não muda as vendas já registradas.':'Cadastre o modelo e a grade que você comprou.')+'</p>'+
     '<div class="linha"><label for="f-nome">Peça</label><input id="f-nome" value="'+esc(p.nome)+'" placeholder="Legging cintura alta"></div>'+
+    '<div class="linha"><label for="f-ref">Referência</label><input id="f-ref" value="'+esc(p.ref||'')+'" placeholder="F1003" autocapitalize="characters"></div>'+
     '<div class="duo">'+
       '<div class="linha"><label for="f-cor">Cor</label><input id="f-cor" value="'+esc(p.cor)+'" placeholder="Preto"></div>'+
       '<div class="linha"><label for="f-min">Avisar quando tiver</label><input id="f-min" type="number" inputmode="numeric" min="0" value="'+(p.minimo||0)+'"></div>'+
@@ -1052,6 +1085,7 @@ async function salvarProduto(idProduto, botao){
   const corpo = {
     id: idProduto || undefined,
     nome,
+    ref: folha.querySelector('#f-ref').value.trim(),
     cor: folha.querySelector('#f-cor').value.trim(),
     custo: num(folha.querySelector('#f-custo').value),
     preco: num(folha.querySelector('#f-preco').value),
@@ -1077,7 +1111,7 @@ function folhaChip(produto, tam){
     : '<option value="venda">Vendi</option>';
   abrirFolha(
     '<h2>'+esc(produto.nome)+' · '+esc(tam)+'</h2>'+
-    '<p class="dica">'+item.qtd+' em estoque agora</p>'+
+    '<p class="dica">'+item.qtd+' em estoque agora'+(item.sku ? ' · SKU '+esc(item.sku) : '')+(item.ean ? ' · EAN '+esc(item.ean) : '')+'</p>'+
     '<div class="linha"><label for="a-tipo">O que aconteceu</label><select id="a-tipo">'+opcoes+'</select></div>'+
     '<div class="duo">'+
       '<div class="linha"><label for="a-qtd" id="rot-qtd">Quantas peças</label><input id="a-qtd" type="number" inputmode="numeric" min="1" value="1"></div>'+
