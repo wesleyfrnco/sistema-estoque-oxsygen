@@ -1034,6 +1034,19 @@ async function confirmarImport(botao){
 }
 
 /* ===== pedidos ===== */
+
+/* telefone no padrão (85) 98501-5801, aceita +55, 0 de operadora, espaços e traços */
+function formatarTelefone(valor){
+  let d = String(valor || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
+  if (d.length >= 11 && d.startsWith('0')) d = d.replace(/^0+/, '');
+  if (d.length === 11) return '(' + d.slice(0,2) + ') ' + d.slice(2,7) + '-' + d.slice(7);
+  if (d.length === 10) return '(' + d.slice(0,2) + ') ' + d.slice(2,6) + '-' + d.slice(6);
+  if (d.length === 9)  return d.slice(0,5) + '-' + d.slice(5);
+  if (d.length === 8)  return d.slice(0,4) + '-' + d.slice(4);
+  return String(valor).trim();
+}
 const STATUS_PED = { aguardando:'Aguardando pagamento', pago:'Pago', enviado:'Enviado', entregue:'Entregue', cancelado:'Cancelado' };
 const PAGAMENTOS = ['Pix','Cartão de crédito','Cartão de débito','Dinheiro','Link de pagamento'];
 let rascunho = null;
@@ -1113,7 +1126,7 @@ function htmlDocPedido(p){
     '<div><div class="wm">oxsygen</div><div class="tag">moda fitness leve &amp; elegante</div></div></div>'+
   '<div class="num"><small>Pedido</small><b>#'+String(p.numero).padStart(4,'0')+'</b><span>'+esc(data)+'</span></div></div>'+
   '<div class="cli"><div><small>Cliente</small><b>'+esc(p.cliente)+'</b></div>'+
-    (p.telefone ? '<div><small>WhatsApp</small>'+esc(p.telefone)+'</div>' : '')+
+    (p.telefone ? '<div><small>WhatsApp</small>'+esc(formatarTelefone(p.telefone))+'</div>' : '')+
     (p.cupom ? '<div><small>Cupom</small>'+esc(p.cupom)+'</div>' : '')+'</div>'+
   '<table><tr><th>Peça</th><th>Tam</th><th class="r">Qtd</th><th class="r">Unitário</th><th class="r">Total</th></tr>'+linhas+'</table>'+
   '<div class="tot">'+
@@ -1145,7 +1158,7 @@ function folhaPedidoDetalhe(id){
     .map(([k,r]) => '<option value="'+k+'"'+(p.status===k?' selected':'')+'>'+r+'</option>').join('');
   abrirFolha(
     '<h2>Pedido #'+p.numero+'</h2>'+
-    '<p class="dica">'+esc(p.cliente)+(p.telefone ? ' · '+esc(p.telefone) : '')+' · '+dataCurta(p.ts)+
+    '<p class="dica">'+esc(p.cliente)+(p.telefone ? ' · '+esc(formatarTelefone(p.telefone)) : '')+' · '+dataCurta(p.ts)+
       (p.usuario ? ' · '+esc(p.usuario) : '')+'</p>'+
     p.itens.map(i =>
       '<div class="venda"><div class="venda-info"><b>'+esc(i.nome)+' · '+esc(i.tam)+'</b>'+
@@ -1273,7 +1286,7 @@ async function gerarPedido(botao){
   botao.disabled = true;
   try {
     const resp = await api('/api/pedidos', { method:'POST', corpo:{
-      cliente:r.cliente, telefone:r.telefone, cupom:r.cupom, origem:r.origem, pagamento:r.pagamento,
+      cliente:r.cliente, telefone:formatarTelefone(r.telefone), cupom:r.cupom, origem:r.origem, pagamento:r.pagamento,
       status:r.status, obs:r.obs, ts,
       itens:r.itens.map(i => ({ produtoId:i.produtoId, tam:i.tam, qtd:i.qtd, valor:i.valor })) } });
     rascunho = null;
@@ -1303,6 +1316,12 @@ folha.addEventListener('input', e => {
 folha.addEventListener('change', e => {
   const d = e.target.dataset;
   if (d.pedStatus){ mudarStatusPed(d.pedStatus, e.target.value); return; }
+  if (rascunho && d.ped === 'telefone'){
+    e.target.value = rascunho.telefone = formatarTelefone(e.target.value);
+    const dig = e.target.value.replace(/\D/g, '');
+    if (dig && dig.length < 10) toast('Inclua o DDD no WhatsApp da cliente.');
+    return;
+  }
   if (!rascunho || d.pedSel === undefined) return;
   rascunho[d.pedSel] = e.target.value;
   if (d.pedSel === 'cupom'){
