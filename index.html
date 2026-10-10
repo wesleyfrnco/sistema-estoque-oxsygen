@@ -329,7 +329,7 @@ function toast(msg){
   const el = document.getElementById('toast');
   el.textContent = msg; el.classList.add('vis');
   clearTimeout(timerToast);
-  timerToast = setTimeout(() => el.classList.remove('vis'), 3000);
+  timerToast = setTimeout(() => el.classList.remove('vis'), Math.min(12000, Math.max(3000, msg.length * 70)));
 }
 
 /* ===== chamadas à API ===== */
