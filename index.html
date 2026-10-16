@@ -289,8 +289,8 @@ button{cursor:pointer}
    ========================================================== */
 const API = 'https://oxsygen-estoque.insertlan.workers.dev';
 
-/* Markup padrão sobre o custo: 100 = preço é o dobro do custo. */
-const MARKUP = 100;
+/* Markup padrão sobre o custo: 120 = preço é o custo x 2,2. */
+const MARKUP = 120;
 const precoSugerido = custo => Math.round(custo * (1 + MARKUP/100) * 100) / 100;
 
 const CHAVE_TOKEN = 'oxsygen.sessao';
@@ -816,7 +816,11 @@ function renderResumo(){
     : '';
 
   document.getElementById('areaBackup').innerHTML = dono()
-    ? '<div class="secao">Exportar</div>'+
+    ? '<div class="secao">Preços</div>'+
+      '<p class="nota" style="margin-top:0">Regra da loja: custo + '+MARKUP+'% (custo × '+(1+MARKUP/100).toLocaleString('pt-BR')+'). '+
+        'Peças novas e notas importadas já usam essa regra.</p>'+
+      '<button class="btn fraco largo" data-acao="reajustarPrecos">Recalcular o preço de todas as peças pela regra</button>'+
+      '<div class="secao">Exportar</div>'+
       '<button class="btn fraco largo" data-acao="csv">Baixar CSV do período</button>'+
       '<p class="nota">Os dados ficam no banco D1 da Cloudflare e são iguais para todo mundo que acessa. O D1 guarda histórico de 30 dias para restaurar o banco em caso de erro.</p>'
     : '';
@@ -1174,6 +1178,7 @@ function folhaPedidoDetalhe(id){
       : '<div class="linha"><label for="ped-status">Status</label><select id="ped-status" data-ped-status="'+p.id+'">'+opcoes+'</select></div>')+
     '<div class="rodape" style="flex-wrap:wrap">'+
       '<button class="btn fraco" data-acao="imprimirPedido" data-n="'+p.id+'">Imprimir / PDF</button>'+
+      (p.status !== 'cancelado' ? '<button class="btn fraco" data-acao="editarPedido" data-n="'+p.id+'">Editar</button>' : '')+
       '<button class="btn fraco" data-acao="copiarPedido" data-n="'+p.id+'">Copiar resumo</button>'+
       (zap ? '<a class="btn fraco" style="text-decoration:none" target="_blank" rel="noopener" href="'+zap+'?text='+encodeURIComponent(resumoPedido(p))+'">WhatsApp</a>' : '')+
       '<button class="btn fraco" data-acao="fechar">Fechar</button></div>'+
@@ -1183,6 +1188,12 @@ function folhaPedidoDetalhe(id){
 }
 
 /* --- novo pedido --- */
+function estoqueLivre(idProduto, tam){
+  const p = estado.produtos.find(x => x.id === idProduto);
+  const g = p && p.grade.find(x => x.tam === tam);
+  const doPedido = rascunho && rascunho.original ? (rascunho.original[idProduto+'|'+tam] || 0) : 0;
+  return (g ? g.qtd : 0) + doPedido;
+}
 function totalRascunho(){ return arred(rascunho.itens.reduce((s,i) => s + i.valor * i.qtd, 0)); }
 function valorComCupom(p){
   const c = cupomAtivos().find(x => x.codigo === rascunho.cupom);
@@ -1193,14 +1204,14 @@ function resultadosPedido(termo){
   const t = String(termo||'').toLowerCase().trim();
   if (!t) return '<p class="nota" style="margin:6px 0">Digite o nome, a cor ou a referência da peça.</p>';
   const achados = estado.produtos.filter(p =>
-    p.grade.some(g => g.qtd > 0) &&
+    p.grade.some(g => estoqueLivre(p.id, g.tam) > 0) &&
     (p.nome+' '+p.cor+' '+(p.ref||'')+' '+p.grade.map(g => (g.sku||'')+' '+(g.ean||'')).join(' ')).toLowerCase().includes(t)).slice(0, 8);
   if (!achados.length) return '<p class="nota" style="margin:6px 0">Nenhuma peça com estoque encontrada.</p>';
   return achados.map(p =>
     '<div class="ped-res"><div class="nome"><b>'+esc(p.nome)+'</b> <small>'+esc(p.cor||'')+(p.ref ? ' · '+esc(p.ref) : '')+' · '+brl(p.preco)+'</small></div>'+
     '<div class="grade">'+p.grade.map(g => {
       const noCarrinho = (rascunho.itens.filter(i => i.produtoId === p.id && i.tam === g.tam).reduce((s,i) => s + i.qtd, 0));
-      const livre = g.qtd - noCarrinho;
+      const livre = estoqueLivre(p.id, g.tam) - noCarrinho;
       return '<button class="chip '+(livre<=0?'zero':'')+'" data-acao="pedAdd" data-p="'+p.id+'" data-t="'+esc(g.tam)+'"'+(livre<=0?' disabled':'')+'>'+
         '<b>'+livre+'</b><span>'+esc(g.tam)+'</span></button>';
     }).join('')+'</div></div>').join('');
@@ -1208,7 +1219,10 @@ function resultadosPedido(termo){
 
 function htmlPedido(){
   const r = rascunho;
-  return '<h2>Novo pedido</h2><p class="dica">Ao gerar, as peças saem do estoque na hora.</p>'+
+  const editando = !!r.editando;
+  return (editando
+      ? '<h2>Editar pedido #'+r.numero+'</h2><p class="dica">Ao salvar, o estoque é acertado: o que saiu volta e o que entrou é baixado.</p>'
+      : '<h2>Novo pedido</h2><p class="dica">Ao gerar, as peças saem do estoque na hora.</p>')+
     '<div class="duo">'+
       '<div class="linha"><label for="ped-cliente">Cliente</label><input id="ped-cliente" data-ped="cliente" value="'+esc(r.cliente)+'" placeholder="Nome" autocomplete="off"></div>'+
       '<div class="linha"><label for="ped-tel">WhatsApp</label><input id="ped-tel" data-ped="telefone" type="tel" inputmode="tel" value="'+esc(r.telefone)+'" placeholder="(85) 99999-9999"></div>'+
@@ -1217,7 +1231,7 @@ function htmlPedido(){
     '<div id="ped-resultados">'+resultadosPedido('')+'</div>'+
     '<div class="linha" style="margin-top:14px"><label>Peças do pedido</label>'+
       (r.itens.length ? r.itens.map((it,i) => {
-        const p = estado.produtos.find(x => x.id === it.produtoId);
+        const p = estado.produtos.find(x => x.id === it.produtoId) || { nome: it.nome || 'Peça excluída', cor: it.cor || '', ref: it.ref || '' };
         return '<div class="cart-linha"><div class="topo"><div><b>'+esc(p.nome)+' · '+esc(it.tam)+'</b>'+
             '<small>'+esc(p.cor||'')+(p.ref ? ' · '+esc(p.ref) : '')+'</small></div>'+
             '<button class="remover" data-acao="pedDel" data-i="'+i+'" aria-label="Remover">×</button></div>'+
@@ -1236,9 +1250,10 @@ function htmlPedido(){
     '<div class="duo">'+
       '<div class="linha"><label for="ped-pag">Pagamento</label><select id="ped-pag" data-ped-sel="pagamento">'+
         PAGAMENTOS.map(x => '<option'+(r.pagamento===x?' selected':'')+'>'+x+'</option>').join('')+'</select></div>'+
-      '<div class="linha"><label for="ped-st">Situação</label><select id="ped-st" data-ped-sel="status">'+
+      (editando ? '<div class="linha"><label>Situação</label><p class="nota" style="margin:10px 0 0">'+esc(STATUS_PED[r.status]||'')+' (muda no detalhe do pedido)</p></div>'
+        : '<div class="linha"><label for="ped-st">Situação</label><select id="ped-st" data-ped-sel="status">'+
         '<option value="aguardando"'+(r.status==='aguardando'?' selected':'')+'>Aguardando pagamento</option>'+
-        '<option value="pago"'+(r.status==='pago'?' selected':'')+'>Já pago</option></select></div>'+
+        '<option value="pago"'+(r.status==='pago'?' selected':'')+'>Já pago</option></select></div>')+
     '</div>'+
     '<div class="duo">'+
       '<div class="linha"><label for="ped-data">Data</label><input id="ped-data" data-ped="data" type="date" value="'+esc(r.data)+'"></div>'+
@@ -1247,7 +1262,7 @@ function htmlPedido(){
     '<div class="ped-total"><span>Total das peças</span><b id="ped-total">'+brl(totalRascunho())+'</b></div>'+
     '<p class="nota" style="margin:0">O frete é por conta da cliente e não entra no total nem no lucro.</p>'+
     '<div class="rodape"><button class="btn fraco" data-acao="fechar">Cancelar</button>'+
-      '<button class="btn" data-acao="gerarPedido">Gerar pedido e dar baixa</button></div>';
+      '<button class="btn" data-acao="gerarPedido">'+(editando ? 'Salvar alterações' : 'Gerar pedido e dar baixa')+'</button></div>';
 }
 
 function repintarPedido(focarBusca){
@@ -1263,16 +1278,30 @@ function novoPedido(){
   abrirFolha(htmlPedido());
 }
 
+function editarPedido(id){
+  const p = pedPorId(id);
+  if (!p || p.status === 'cancelado') return;
+  const original = {};
+  p.itens.forEach(i => { const k = i.produtoId+'|'+i.tam; original[k] = (original[k] || 0) + i.qtd; });
+  rascunho = { editando: p.id, numero: p.numero, original,
+    cliente: p.cliente, telefone: formatarTelefone(p.telefone), cupom: p.cupom || '', origem: p.origem || '',
+    pagamento: p.pagamento || 'Pix', status: p.status, obs: p.obs || '',
+    data: new Date(p.ts).toLocaleDateString('sv-SE'), dataOriginal: p.ts.slice(0,10), tsOriginal: p.ts,
+    itens: p.itens.map(i => ({ produtoId: i.produtoId, tam: i.tam, qtd: i.qtd, valor: i.unit, nome: i.nome, cor: i.cor, ref: i.ref })) };
+  abrirFolha(htmlPedido());
+}
+
 function pedAdd(idProduto, tam){
   const p = estado.produtos.find(x => x.id === idProduto);
   const g = p && p.grade.find(x => x.tam === tam);
   if (!g) return;
   const ex = rascunho.itens.find(i => i.produtoId === idProduto && i.tam === tam);
+  const livre = estoqueLivre(idProduto, tam);
   if (ex){
-    if (ex.qtd >= g.qtd){ toast('Só há '+g.qtd+' em estoque.'); return; }
+    if (ex.qtd >= livre){ toast('Só há '+livre+' em estoque.'); return; }
     ex.qtd++;
   } else {
-    if (g.qtd < 1){ toast('Sem estoque nesse tamanho.'); return; }
+    if (livre < 1){ toast('Sem estoque nesse tamanho.'); return; }
     rascunho.itens.push({ produtoId:idProduto, tam, qtd:1, valor:valorComCupom(p) });
   }
   repintarPedido(true);
@@ -1282,17 +1311,19 @@ async function gerarPedido(botao){
   const r = rascunho;
   if (!r.cliente.trim()){ toast('Informe o nome da cliente.'); return; }
   if (!r.itens.length){ toast('Adicione ao menos uma peça.'); return; }
-  const ts = new Date(r.data + 'T' + new Date().toTimeString().slice(0,8)).toISOString();
+  const ts = (r.editando && r.data === new Date(r.tsOriginal).toLocaleDateString('sv-SE'))
+    ? r.tsOriginal
+    : new Date(r.data + 'T' + new Date().toTimeString().slice(0,8)).toISOString();
   botao.disabled = true;
   try {
-    const resp = await api('/api/pedidos', { method:'POST', corpo:{
+    const resp = await api(r.editando ? '/api/pedidos/'+r.editando : '/api/pedidos', { method: r.editando ? 'PUT' : 'POST', corpo:{
       cliente:r.cliente, telefone:formatarTelefone(r.telefone), cupom:r.cupom, origem:r.origem, pagamento:r.pagamento,
       status:r.status, obs:r.obs, ts,
       itens:r.itens.map(i => ({ produtoId:i.produtoId, tam:i.tam, qtd:i.qtd, valor:i.valor })) } });
     rascunho = null;
     await carregarEstado();
     fecharFolha(); render();
-    toast('Pedido #'+resp.numero+' gerado. Estoque atualizado.');
+    toast(r.editando ? 'Pedido #'+resp.numero+' atualizado. Estoque acertado.' : 'Pedido #'+resp.numero+' gerado. Estoque atualizado.');
     folhaPedidoDetalhe(resp.id);
   } catch(e){ toast(e.message); botao.disabled = false; }
 }
@@ -1613,16 +1644,30 @@ document.addEventListener('click', async e => {
   if (acao === 'pedDel'){ rascunho.itens.splice(+alvo.dataset.i, 1); repintarPedido(false); }
   if (acao === 'pedQtd'){
     const it = rascunho.itens[+alvo.dataset.i];
-    const p = estado.produtos.find(x => x.id === it.produtoId);
-    const g = p.grade.find(x => x.tam === it.tam);
+    const livre = estoqueLivre(it.produtoId, it.tam);
+    const outrasLinhas = rascunho.itens.filter((x,j) => j !== +alvo.dataset.i && x.produtoId === it.produtoId && x.tam === it.tam)
+      .reduce((s,x) => s + x.qtd, 0);
     const novo = it.qtd + inteiro(alvo.dataset.d);
     if (novo < 1){ rascunho.itens.splice(+alvo.dataset.i, 1); }
-    else if (novo > g.qtd){ toast('Só há '+g.qtd+' em estoque.'); return; }
+    else if (novo + outrasLinhas > livre){ toast('Só há '+livre+' em estoque.'); return; }
     else it.qtd = novo;
     repintarPedido(false);
   }
   if (acao === 'gerarPedido') gerarPedido(alvo);
   if (acao === 'imprimirPedido') imprimirPedido(alvo.dataset.n);
+  if (acao === 'editarPedido') editarPedido(alvo.dataset.n);
+  if (acao === 'reajustarPrecos'){
+    const fator = 1 + MARKUP/100;
+    const mudam = estado.produtos.filter(p => p.custo > 0 && Math.abs(Math.round(p.custo*fator*100)/100 - p.preco) > 0.004);
+    if (!mudam.length){ toast('Todos os preços já seguem a regra de '+MARKUP+'%.'); return; }
+    const ex = mudam.slice(0,3).map(p => p.nome+': '+brl(p.preco)+' → '+brl(Math.round(p.custo*fator*100)/100)).join('\n');
+    if (!confirm('Recalcular o preço de '+mudam.length+' peça(s) para custo + '+MARKUP+'%?\n\n'+ex+(mudam.length>3?'\n...':'')+
+      '\n\nVendas e pedidos já feitos não mudam.')) return;
+    try {
+      const r = await api('/api/precos/reajustar', { method:'POST', corpo:{ markup: MARKUP } });
+      await carregarEstado(); render(); toast(r.alterados+' preço(s) atualizado(s).');
+    } catch(err){ toast(err.message); }
+  }
   if (acao === 'copiarPedido'){
     const ped = pedPorId(alvo.dataset.n);
     try { await navigator.clipboard.writeText(resumoPedido(ped)); toast('Resumo copiado.'); }
