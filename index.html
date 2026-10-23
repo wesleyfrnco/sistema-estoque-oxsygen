@@ -714,6 +714,75 @@ function listaRank(titulo, itens, limite){
     '<div class="rank"><span>'+esc(nome)+'</span><i>'+d.qtd+' un</i><b>'+brl(d.val)+'</b></div>').join('');
 }
 
+/* ---------- financeiro: o que entrou de dinheiro e o que falta receber ---------- */
+function recebimentosNa(f){
+  const out = [];
+  (estado.pedidos||[]).forEach(p => {
+    if (p.status === 'cancelado') return;
+    const pags = (p.pagamentos||[]).length ? p.pagamentos
+      : (recebidoPed(p) > 0 ? [{ ts:p.ts, valor:p.total, forma:p.pagamento||'Não informado', parcelas:1, legado:true }] : []);
+    pags.forEach(x => {
+      const t = new Date(x.ts).getTime();
+      if (t >= f.de.getTime() && t <= f.ate.getTime()) out.push(Object.assign({ pedido:p }, x));
+    });
+  });
+  return out.sort((a,b) => b.ts.localeCompare(a.ts));
+}
+
+function htmlFinanceiro(f){
+  const recs = recebimentosNa(f);
+  const total = arred(recs.reduce((s,x) => s + x.valor, 0));
+  const pendentes = (estado.pedidos||[]).filter(p => faltaPed(p) > 0)
+    .sort((a,b) => a.ts.localeCompare(b.ts));
+  const aReceber = arred(pendentes.reduce((s,p) => s + faltaPed(p), 0));
+  const porForma = {};
+  recs.forEach(x => {
+    const k = x.forma || 'Não informado';
+    porForma[k] = porForma[k] || { n:0, val:0, parc:0 };
+    porForma[k].n++; porForma[k].val += x.valor; if (x.parcelas > 1) porForma[k].parc += x.valor;
+  });
+  const dias = iso => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 864e5));
+  return '<div class="secao">Financeiro</div>'+
+    '<div class="cartoes">'+
+      cartao(brl(total), 'recebido no período')+
+      cartao(brl(aReceber), 'a receber hoje · '+pendentes.length+' '+(pendentes.length===1?'pedido':'pedidos'))+
+    '</div>'+
+    (recs.length
+      ? Object.entries(porForma).sort((a,b) => b[1].val - a[1].val).map(([forma,d]) =>
+          '<div class="rank"><span>'+esc(forma)+'<small style="display:block;color:var(--tinta-suave);font-size:12.5px;margin-top:2px">'+d.n+' '+(d.n===1?'lançamento':'lançamentos')+
+          (d.parc ? ' · '+brl(arred(d.parc))+' parcelado' : '')+'</small></span><b>'+brl(arred(d.val))+'</b></div>').join('')+
+        '<div class="secao">Recebimentos do período</div>'+
+        recs.slice(0,40).map(x =>
+          '<button class="rank" style="width:100%;background:none;border:0;border-bottom:1px solid var(--linho);text-align:left;font:inherit;color:inherit" data-acao="abrirPedido" data-n="'+x.pedido.id+'">'+
+          '<span>#'+x.pedido.numero+' '+esc(x.pedido.cliente)+'<small style="display:block;color:var(--tinta-suave);font-size:12.5px;margin-top:2px">'+dataCurta(x.ts)+' · '+esc(formaTexto(x))+'</small></span><b>'+brl(x.valor)+'</b></button>').join('')+
+        (recs.length > 40 ? '<p class="nota">E mais '+(recs.length-40)+' no CSV.</p>' : '')
+      : '<p class="nota" style="margin-top:0">Nenhum valor recebido no período.</p>')+
+    (pendentes.length
+      ? '<div class="secao">A receber</div>'+pendentes.map(p =>
+          '<button class="rank" style="width:100%;background:none;border:0;border-bottom:1px solid var(--linho);text-align:left;font:inherit;color:inherit" data-acao="abrirPedido" data-n="'+p.id+'">'+
+          '<span>#'+p.numero+' '+esc(p.cliente)+'<small style="display:block;color:var(--tinta-suave);font-size:12.5px;margin-top:2px">'+(dias(p.ts) ? 'pedido há '+dias(p.ts)+' '+(dias(p.ts)===1?'dia':'dias') : 'pedido de hoje')+
+          ' · '+(recebidoPed(p) > 0 ? 'pagou '+brl(recebidoPed(p)) : 'nada pago')+'</small></span><b>'+brl(faltaPed(p))+'</b></button>').join('')
+      : '')+
+    '<button class="btn fraco largo" style="margin-top:12px" data-acao="csvFinanceiro">Baixar relatório financeiro (CSV)</button>';
+}
+
+function exportarFinanceiro(){
+  const f = faixaAtual();
+  const v = n => arred(n).toFixed(2).replace('.',',');
+  const linhas = [['Recebimentos de '+iso(f.de)+' a '+iso(new Date(f.ate))], ['Data','Pedido','Cliente','Forma','Parcelas','Valor','Lançado por']];
+  recebimentosNa(f).slice().reverse().forEach(x => linhas.push([x.ts.slice(0,10), x.pedido.numero, x.pedido.cliente, x.forma||'',
+    x.parcelas||1, v(x.valor), x.legado ? '(marcado como pago)' : (x.usuario||'')]));
+  linhas.push([], ['A receber (situação de hoje)'], ['Pedido','Data do pedido','Cliente','WhatsApp','Total','Recebido','Falta']);
+  (estado.pedidos||[]).filter(p => faltaPed(p) > 0).sort((a,b) => a.ts.localeCompare(b.ts)).forEach(p =>
+    linhas.push([p.numero, p.ts.slice(0,10), p.cliente, p.telefone||'', v(p.total), v(recebidoPed(p)), v(faltaPed(p))]));
+  const csv = linhas.map(l => l.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(';')).join('\n');
+  const url = URL.createObjectURL(new Blob(['\uFEFF'+csv], { type:'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'oxsygen-financeiro-'+iso(f.de)+'-a-'+iso(new Date(f.ate))+'.csv'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1500);
+  toast('Relatório baixado.');
+}
+
 function renderResumo(){
   renderFiltro();
   const f = faixaAtual();
@@ -768,6 +837,7 @@ function renderResumo(){
       (dono() && a.comissao ? cartao(brl(a.lucro - a.comissao), 'lucro após comissão') : '')+
     '</div>'+
     grafico(vendas, f)+
+    htmlFinanceiro(f)+
     (dono() && listaComissoes.length
       ? '<div class="secao">Comissões do período</div>'+listaComissoes.map(([cod,d]) =>
           '<div class="rank"><span>'+esc(cod)+(pessoaDo(cod)?' · '+esc(pessoaDo(cod)):'')+
@@ -1777,6 +1847,7 @@ document.addEventListener('click', async e => {
   }
   if (acao === 'salvarPessoa') salvarPessoa(alvo);
   if (acao === 'csv') exportarCsv();
+  if (acao === 'csvFinanceiro') exportarFinanceiro();
   if (acao === 'periodo'){ periodo.tipo = alvo.dataset.v; renderResumo(); }
   if (acao === 'salvarProduto') salvarProduto(alvo.dataset.p, alvo);
   if (acao === 'confirmarMov') confirmarMov(alvo.dataset.p, alvo.dataset.t, alvo);
