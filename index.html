@@ -1059,11 +1059,27 @@ const numeroPedido = id => { const p = (estado.pedidos||[]).find(x => x.id === i
 const arred = n => Math.round(n * 100) / 100;
 const pedPorId = id => (estado.pedidos||[]).find(p => p.id === id);
 const pecasDoPedido = p => p.itens.reduce((s,i) => s + i.qtd, 0);
+// pedidos antigos, marcados como pagos antes do controle de pagamentos, contam como quitados
+const recebidoPed = p => p.status === 'cancelado' ? 0
+  : ((p.pagamentos||[]).length ? arred(p.pagamentos.reduce((s,x) => s + (x.valor||0), 0))
+  : (['pago','enviado','entregue'].includes(p.status) ? p.total : 0));
+const faltaPed = p => p.status === 'cancelado' ? 0 : Math.max(0, arred(p.total - recebidoPed(p)));
+const formaTexto = x => (x.forma || 'Pagamento') + (x.parcelas > 1 ? ' em '+x.parcelas+'x' : '');
+const hojeISO = () => new Date().toLocaleDateString('sv-SE');
 
 function renderPedidos(){
   const alvo = document.getElementById('listaPedidos');
   const lista = (estado.pedidos||[]).slice().sort((a,b) => b.ts.localeCompare(a.ts) || b.numero - a.numero);
   let html = '<div class="barra"><button class="btn" data-acao="novoPedido">Novo pedido</button></div>';
+  const pendentes = lista.filter(p => faltaPed(p) > 0);
+  const mes = new Date().toLocaleDateString('sv-SE').slice(0,7);
+  const noMes = lista.filter(p => p.status !== 'cancelado').reduce((s,p) => s +
+    ((p.pagamentos||[]).length
+      ? p.pagamentos.filter(x => new Date(x.ts).toLocaleDateString('sv-SE').slice(0,7) === mes).reduce((t,x) => t + x.valor, 0)
+      : (recebidoPed(p) && new Date(p.ts).toLocaleDateString('sv-SE').slice(0,7) === mes ? p.total : 0)), 0);
+  if (lista.length) html += '<div class="cartoes">'+
+    cartao(brl(pendentes.reduce((s,p) => s + faltaPed(p), 0)), 'a receber · '+pendentes.length+' '+(pendentes.length===1?'pedido':'pedidos'))+
+    cartao(brl(arred(noMes)), 'recebido este mês')+'</div>';
   if (!lista.length){
     alvo.innerHTML = html + '<div class="vazio"><p>Nenhum pedido ainda.<br>Gere um pedido para a cliente e o estoque baixa sozinho.</p></div>';
     return;
@@ -1076,7 +1092,8 @@ function renderPedidos(){
       '<div class="ped-info"><b>#'+p.numero+' · '+esc(p.cliente)+'</b>'+
         '<span>'+pecasDoPedido(p)+' '+(pecasDoPedido(p)===1?'peça':'peças')+
           (p.cupom ? '<i class="tag">'+esc(p.cupom)+'</i>' : '')+'</span></div>'+
-      '<div class="ped-val"><b>'+brl(p.total)+'</b><span class="st '+p.status+'">'+STATUS_PED[p.status]+'</span></div>'+
+      '<div class="ped-val"><b>'+brl(p.total)+'</b><span class="st '+p.status+'">'+
+        (p.status === 'aguardando' && recebidoPed(p) > 0 ? 'Falta '+brl(faltaPed(p)) : STATUS_PED[p.status])+'</span></div>'+
     '</button>';
   });
   alvo.innerHTML = html;
@@ -1087,6 +1104,7 @@ function resumoPedido(p){
   p.itens.forEach(i => linhas.push(i.qtd+'x '+i.nome+(i.cor ? ' '+i.cor : '')+' (tam '+i.tam+') - '+brl(i.unit*i.qtd)));
   linhas.push('', 'Total das peças: '+brl(p.total));
   if (p.pagamento) linhas.push('Pagamento: '+p.pagamento);
+  if (recebidoPed(p) > 0 && faltaPed(p) > 0) linhas.push('Já pago: '+brl(recebidoPed(p))+' · Falta: '+brl(faltaPed(p)));
   linhas.push('O frete é calculado à parte.');
   return linhas.join('\n');
 }
@@ -1101,7 +1119,10 @@ function htmlDocPedido(p){
   const linhas = p.itens.map(i =>
     '<tr><td>'+esc(i.nome)+'<small>'+[i.cor, i.ref ? 'ref. '+i.ref : ''].filter(Boolean).map(esc).join(' · ')+'</small></td>'+
     '<td>'+esc(i.tam)+'</td><td class="r">'+i.qtd+'</td><td class="r">'+brl(i.unit)+'</td><td class="r">'+brl(i.unit*i.qtd)+'</td></tr>').join('');
-  const pagto = [p.pagamento ? '<b>Pagamento:</b> '+esc(p.pagamento) : '', '<b>Situação:</b> '+esc(STATUS_PED[p.status]||'')]
+  const pagsDoc = (p.pagamentos||[]).map(x => esc(formaTexto(x))+' '+brl(x.valor)).join(', ');
+  const pagto = [pagsDoc ? '<b>Pago:</b> '+pagsDoc : (p.pagamento ? '<b>Pagamento:</b> '+esc(p.pagamento) : ''),
+                 faltaPed(p) > 0 && recebidoPed(p) > 0 ? '<b>Falta pagar:</b> '+brl(faltaPed(p)) : '',
+                 '<b>Situação:</b> '+esc(STATUS_PED[p.status]||'')]
     .filter(Boolean).join(' &nbsp;·&nbsp; ');
   return '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Pedido #'+String(p.numero).padStart(4,'0')+' - Oxsygen</title>'+
   '<link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500&display=swap" rel="stylesheet"><style>'+
@@ -1151,6 +1172,45 @@ function imprimirPedido(id){
   setTimeout(() => { try { w.focus(); w.print(); } catch(e){} }, 900);
 }
 
+function htmlPagamentos(p){
+  if (p.status === 'cancelado') return '';
+  const pags = p.pagamentos || [];
+  const rec = recebidoPed(p), falta = faltaPed(p);
+  return '<div class="secao">Pagamentos</div>'+
+    (pags.length ? pags.map(x =>
+      '<div class="venda"><div class="venda-info"><b>'+esc(formaTexto(x))+'</b><span>'+dataCurta(x.ts)+(x.usuario ? ' · '+esc(x.usuario) : '')+'</span></div>'+
+      '<div class="venda-val"><b>'+brl(x.valor)+'</b>'+
+        (dono() ? '<button class="link" style="display:block;margin:4px 0 0 auto" data-acao="removerPag" data-n="'+p.id+'" data-pag="'+x.id+'">remover</button>' : '')+'</div></div>').join('')
+      : (rec > 0 ? '<p class="nota" style="margin:0 0 8px">Marcado como pago antes do controle de pagamentos.</p>'
+                 : '<p class="nota" style="margin:0 0 8px">Nenhum valor recebido ainda.</p>'))+
+    '<div class="ped-total"><span>Recebido</span><b>'+brl(rec)+'</b></div>'+
+    (falta > 0
+      ? '<div class="ped-total"><span>Falta receber</span><b>'+brl(falta)+'</b></div>'+
+        '<div class="duo">'+
+          '<div class="linha"><label for="pg-valor">Valor recebido</label><input id="pg-valor" type="number" inputmode="decimal" step="0.01" min="0" value="'+falta+'"></div>'+
+          '<div class="linha"><label for="pg-forma">Forma</label><select id="pg-forma">'+
+            PAGAMENTOS.map(x => '<option'+(p.pagamento===x?' selected':'')+'>'+x+'</option>').join('')+'</select></div>'+
+        '</div><div class="duo">'+
+          '<div class="linha"><label for="pg-parc">Parcelas (cartão de crédito)</label><input id="pg-parc" type="number" inputmode="numeric" min="1" max="24" value="1"></div>'+
+          '<div class="linha"><label for="pg-data">Data</label><input id="pg-data" type="date" value="'+hojeISO()+'"></div>'+
+        '</div>'+
+        '<button class="btn" style="width:100%;margin-bottom:6px" data-acao="registrarPag" data-n="'+p.id+'">Registrar pagamento</button>'
+      : '');
+}
+
+async function registrarPag(id, botao){
+  const v = num(document.getElementById('pg-valor').value);
+  if (!(v > 0)){ toast('Informe o valor recebido.'); return; }
+  botao.disabled = true;
+  try {
+    const r = await api('/api/pedidos/'+id+'/pagamentos', { method:'POST', corpo:{
+      valor: v, forma: document.getElementById('pg-forma').value,
+      parcelas: inteiro(document.getElementById('pg-parc').value) || 1, data: document.getElementById('pg-data').value } });
+    await carregarEstado(); render(); folhaPedidoDetalhe(id);
+    toast(r.quitou ? 'Pagamento registrado. Pedido quitado.' : 'Pagamento registrado.');
+  } catch(e){ toast(e.message); botao.disabled = false; }
+}
+
 function folhaPedidoDetalhe(id){
   const p = pedPorId(id);
   if (!p) return;
@@ -1176,6 +1236,7 @@ function folhaPedidoDetalhe(id){
     (p.codigoSite || p.capi ? '<p class="nota" style="margin:0 0 12px">'+
       [p.codigoSite ? 'Código do site '+p.codigoSite : '',
        p.capi ? (p.capi.startsWith('ok') ? 'Compra enviada à Meta' : 'Envio à Meta falhou: '+p.capi.slice(0,90)) : ''].filter(Boolean).map(esc).join(' · ')+'</p>' : '')+
+    htmlPagamentos(p)+
     (p.status === 'cancelado'
       ? '<p class="nota"><span class="st cancelado">Cancelado</span> As peças voltaram ao estoque.</p>'
       : '<div class="linha"><label for="ped-status">Status</label><select id="ped-status" data-ped-status="'+p.id+'">'+opcoes+'</select></div>')+
@@ -1254,6 +1315,8 @@ function htmlPedido(){
     '<div class="duo">'+
       '<div class="linha"><label for="ped-pag">Pagamento</label><select id="ped-pag" data-ped-sel="pagamento">'+
         PAGAMENTOS.map(x => '<option'+(r.pagamento===x?' selected':'')+'>'+x+'</option>').join('')+'</select></div>'+
+      (r.pagamento === 'Cartão de crédito' ? '<div class="linha"><label for="ped-parc">Parcelas</label><input id="ped-parc" data-ped="parcelas" type="number" inputmode="numeric" min="1" max="24" value="'+(r.parcelas||1)+'"></div>' : '')+
+    '</div><div class="duo">'+
       (editando ? '<div class="linha"><label>Situação</label><p class="nota" style="margin:10px 0 0">'+esc(STATUS_PED[r.status]||'')+' (muda no detalhe do pedido)</p></div>'
         : '<div class="linha"><label for="ped-st">Situação</label><select id="ped-st" data-ped-sel="status">'+
         '<option value="aguardando"'+(r.status==='aguardando'?' selected':'')+'>Aguardando pagamento</option>'+
@@ -1322,7 +1385,7 @@ async function gerarPedido(botao){
   try {
     const resp = await api(r.editando ? '/api/pedidos/'+r.editando : '/api/pedidos', { method: r.editando ? 'PUT' : 'POST', corpo:{
       cliente:r.cliente, telefone:formatarTelefone(r.telefone), codigoSite:(r.codigoSite||'').trim().toUpperCase(), cupom:r.cupom, origem:r.origem, pagamento:r.pagamento,
-      status:r.status, obs:r.obs, ts,
+      status:r.status, parcelas: inteiro(r.parcelas) || 1, obs:r.obs, ts,
       itens:r.itens.map(i => ({ produtoId:i.produtoId, tam:i.tam, qtd:i.qtd, valor:i.valor })) } });
     rascunho = null;
     await carregarEstado();
@@ -1359,6 +1422,7 @@ folha.addEventListener('change', e => {
   }
   if (!rascunho || d.pedSel === undefined) return;
   rascunho[d.pedSel] = e.target.value;
+  if (d.pedSel === 'pagamento') repintarPedido(false);
   if (d.pedSel === 'cupom'){
     rascunho.itens.forEach(i => { const p = estado.produtos.find(x => x.id === i.produtoId); i.valor = valorComCupom(p); });
     if (e.target.value) rascunho.origem = 'influencer';
@@ -1659,6 +1723,13 @@ document.addEventListener('click', async e => {
   }
   if (acao === 'gerarPedido') gerarPedido(alvo);
   if (acao === 'imprimirPedido') imprimirPedido(alvo.dataset.n);
+  if (acao === 'registrarPag') registrarPag(alvo.dataset.n, alvo);
+  if (acao === 'removerPag'){
+    if (!confirm('Remover este pagamento do pedido?')) return;
+    try { await api('/api/pedidos/'+alvo.dataset.n+'/pagamentos/'+alvo.dataset.pag, { method:'DELETE' });
+          await carregarEstado(); render(); folhaPedidoDetalhe(alvo.dataset.n); toast('Pagamento removido.'); }
+    catch(err){ toast(err.message); }
+  }
   if (acao === 'editarPedido') editarPedido(alvo.dataset.n);
   if (acao === 'reajustarPrecos'){
     const fator = 1 + MARKUP/100;
