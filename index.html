@@ -1173,6 +1173,9 @@ function folhaPedidoDetalhe(id){
       [p.pagamento, p.cupom ? 'cupom '+p.cupom : '', p.origem && ORIGENS[p.origem] ? ORIGENS[p.origem] : '',
        lucro != null ? 'lucro '+brl(lucro) : ''].filter(Boolean).map(esc).join(' · ')+'</p>'+
     (p.obs ? '<p class="nota" style="margin:0 0 12px">Obs: '+esc(p.obs)+'</p>' : '')+
+    (p.codigoSite || p.capi ? '<p class="nota" style="margin:0 0 12px">'+
+      [p.codigoSite ? 'Código do site '+p.codigoSite : '',
+       p.capi ? (p.capi.startsWith('ok') ? 'Compra enviada à Meta' : 'Envio à Meta falhou: '+p.capi.slice(0,90)) : ''].filter(Boolean).map(esc).join(' · ')+'</p>' : '')+
     (p.status === 'cancelado'
       ? '<p class="nota"><span class="st cancelado">Cancelado</span> As peças voltaram ao estoque.</p>'
       : '<div class="linha"><label for="ped-status">Status</label><select id="ped-status" data-ped-status="'+p.id+'">'+opcoes+'</select></div>')+
@@ -1226,6 +1229,7 @@ function htmlPedido(){
     '<div class="duo">'+
       '<div class="linha"><label for="ped-cliente">Cliente</label><input id="ped-cliente" data-ped="cliente" value="'+esc(r.cliente)+'" placeholder="Nome" autocomplete="off"></div>'+
       '<div class="linha"><label for="ped-tel">WhatsApp</label><input id="ped-tel" data-ped="telefone" type="tel" inputmode="tel" value="'+esc(r.telefone)+'" placeholder="(85) 99999-9999"></div>'+
+      '<div class="linha"><label for="ped-codigo">Código do site <span class="dica" style="font-weight:400">(se veio na mensagem)</span></label><input id="ped-codigo" data-ped="codigoSite" value="'+esc(r.codigoSite||'')+'" placeholder="Ex.: OX4K7P" autocomplete="off" style="text-transform:uppercase"></div>'+
     '</div>'+
     '<div class="linha"><label for="ped-busca">Adicionar peça</label><input id="ped-busca" data-ped-busca type="search" placeholder="Buscar peça, cor ou referência" autocomplete="off"></div>'+
     '<div id="ped-resultados">'+resultadosPedido('')+'</div>'+
@@ -1273,7 +1277,7 @@ function repintarPedido(focarBusca){
 }
 
 function novoPedido(){
-  rascunho = { cliente:'', telefone:'', cupom:'', origem:'', pagamento:'Pix', status:'aguardando',
+  rascunho = { cliente:'', telefone:'', codigoSite:'', cupom:'', origem:'', pagamento:'Pix', status:'aguardando',
                data:new Date().toISOString().slice(0,10), obs:'', itens:[] };
   abrirFolha(htmlPedido());
 }
@@ -1284,7 +1288,7 @@ function editarPedido(id){
   const original = {};
   p.itens.forEach(i => { const k = i.produtoId+'|'+i.tam; original[k] = (original[k] || 0) + i.qtd; });
   rascunho = { editando: p.id, numero: p.numero, original,
-    cliente: p.cliente, telefone: formatarTelefone(p.telefone), cupom: p.cupom || '', origem: p.origem || '',
+    cliente: p.cliente, telefone: formatarTelefone(p.telefone), codigoSite: p.codigoSite || '', cupom: p.cupom || '', origem: p.origem || '',
     pagamento: p.pagamento || 'Pix', status: p.status, obs: p.obs || '',
     data: new Date(p.ts).toLocaleDateString('sv-SE'), dataOriginal: p.ts.slice(0,10), tsOriginal: p.ts,
     itens: p.itens.map(i => ({ produtoId: i.produtoId, tam: i.tam, qtd: i.qtd, valor: i.unit, nome: i.nome, cor: i.cor, ref: i.ref })) };
@@ -1317,7 +1321,7 @@ async function gerarPedido(botao){
   botao.disabled = true;
   try {
     const resp = await api(r.editando ? '/api/pedidos/'+r.editando : '/api/pedidos', { method: r.editando ? 'PUT' : 'POST', corpo:{
-      cliente:r.cliente, telefone:formatarTelefone(r.telefone), cupom:r.cupom, origem:r.origem, pagamento:r.pagamento,
+      cliente:r.cliente, telefone:formatarTelefone(r.telefone), codigoSite:(r.codigoSite||'').trim().toUpperCase(), cupom:r.cupom, origem:r.origem, pagamento:r.pagamento,
       status:r.status, obs:r.obs, ts,
       itens:r.itens.map(i => ({ produtoId:i.produtoId, tam:i.tam, qtd:i.qtd, valor:i.valor })) } });
     rascunho = null;
