@@ -515,25 +515,48 @@ function renderEstoque(){
   }).join('');
 }
 
+/* ---------- Movimentos: busca por referência e conferência da peça ---------- */
+let buscaMov = '';
+const normal = t => String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();
+const SUB = 'style="display:block;color:var(--tinta-suave);font-size:12.5px;margin-top:2px"';
+
 function renderVendas(){
   const alvo = document.getElementById('listaVendas');
-  const movs = estado.movimentos.slice().sort((a,b) => b.ts.localeCompare(a.ts));
-  if (!movs.length){
-    alvo.innerHTML = '<div class="vazio"><p>Nenhum movimento registrado.<br>Toque em um tamanho no estoque para registrar.</p></div>';
+  const busca = '<div class="linha" style="margin-bottom:6px"><input id="busca-mov" data-busca-mov type="search" value="'+esc(buscaMov)+
+    '" placeholder="Buscar por referência, peça, cor ou cliente (ex.: F2007)" autocomplete="off"></div>';
+  const q = normal(buscaMov);
+  const prodPorId = id => estado.produtos.find(p => p.id === id);
+  let movs = estado.movimentos.slice().sort((a,b) => b.ts.localeCompare(a.ts));
+  let conferencia = '';
+  if (q){
+    const prods = estado.produtos.filter(p => [p.ref, p.nome, p.cor, (p.ref||'')+' '+(p.cor||'')].some(t => normal(t).includes(q)));
+    const ids = new Set(prods.map(p => p.id));
+    movs = movs.filter(m => {
+      const p = prodPorId(m.produtoId), ped = m.pedidoId ? pedPorId(m.pedidoId) : null;
+      return ids.has(m.produtoId) || normal(m.nome).includes(q) || (ped && normal(ped.cliente).includes(q)) ||
+             (p && normal(p.ref).includes(q));
+    });
+    if (prods.length && prods.length <= 12) conferencia = htmlConferencia(prods);
+  }
+  if (!movs.length && !conferencia){
+    alvo.innerHTML = busca + '<div class="vazio"><p>'+(q ? 'Nada encontrado para essa busca.' : 'Nenhum movimento registrado.<br>Toque em um tamanho no estoque para registrar.')+'</p></div>';
     return;
   }
-  let html = '', diaAtual = '';
+  let html = busca + conferencia + (q && movs.length ? '<div class="secao">Movimentos encontrados</div>' : ''), diaAtual = '';
   movs.forEach(m => {
     const dia = diaCompleto(m.ts);
     if (dia !== diaAtual){ html += '<div class="dia">'+esc(dia)+'</div>'; diaAtual = dia; }
     const venda = m.tipo === 'venda';
+    const p = prodPorId(m.produtoId);
+    const ped = m.pedidoId ? pedPorId(m.pedidoId) : null;
     const rotulo = venda ? 'Venda' : (m.tipo === 'entrada' ? 'Entrada' : 'Ajuste');
     const valor = venda ? brl(m.unit*m.qtd) : (m.tipo === 'entrada' && dono() ? brl(m.custoUnit*m.qtd) : '—');
     const lucro = (venda && dono() && m.custoUnit != null) ? 'lucro '+brl((m.unit-m.custoUnit)*m.qtd) : '';
     html += '<div class="venda '+(venda?'':'entrada')+'">'+
       '<div class="venda-info"><b>'+esc(m.nome)+' · '+esc(m.tam)+'</b>'+
-      '<span>'+rotulo+' de '+m.qtd+' un · '+dataCurta(m.ts)+(m.usuario ? ' · '+esc(m.usuario) : '')+
-        (m.pedidoId ? '<i class="tag">Pedido #'+esc(numeroPedido(m.pedidoId))+'</i>' : '')+
+      '<span>'+[p && p.ref, p && p.cor].filter(Boolean).map(esc).join(' · ')+(p && (p.ref || p.cor) ? ' · ' : '')+rotulo+' de '+m.qtd+' un · '+dataCurta(m.ts)+(m.usuario ? ' · '+esc(m.usuario) : '')+
+        (m.pedidoId ? '<button class="tag" style="border:0;cursor:pointer" data-acao="abrirPedido" data-n="'+m.pedidoId+'">Pedido #'+esc(numeroPedido(m.pedidoId))+
+          (ped ? ' · '+esc(ped.cliente) : '')+'</button>' : '')+
         (m.cupom ? '<i class="tag">'+esc(m.cupom)+'</i>' : '')+
         (m.origem && ORIGENS[m.origem] ? '<i class="tag">'+ORIGENS[m.origem]+'</i>' : '')+'</span></div>'+
       '<div class="venda-val"><b>'+valor+'</b>'+(lucro ? '<span>'+lucro+'</span>' : '')+'</div>'+
@@ -542,6 +565,38 @@ function renderVendas(){
     '</div>';
   });
   alvo.innerHTML = html;
+}
+
+// resumo por cor e tamanho + pedidos em que a peça entrou (inclusive cancelados)
+function htmlConferencia(prods){
+  const ids = new Set(prods.map(p => p.id));
+  const linhas = [];
+  prods.forEach(p => {
+    const tams = new Set(p.grade.map(g => g.tam));
+    estado.movimentos.filter(m => m.produtoId === p.id).forEach(m => tams.add(m.tam));
+    tams.forEach(t => {
+      const ms = estado.movimentos.filter(m => m.produtoId === p.id && m.tam === t);
+      const soma = tipo => ms.filter(m => m.tipo === tipo).reduce((s,m) => s + m.qtd, 0);
+      const g = p.grade.find(x => x.tam === t);
+      linhas.push({ p, t, ent: soma('entrada'), ven: soma('venda'), aj: ms.filter(m => m.tipo === 'ajuste').length, saldo: g ? g.qtd : 0 });
+    });
+  });
+  const peds = (estado.pedidos||[]).filter(pd => pd.itens.some(i => ids.has(i.produtoId)))
+    .sort((a,b) => b.ts.localeCompare(a.ts));
+  return '<div class="secao">Conferência da peça</div>'+
+    linhas.map(l =>
+      '<div class="rank"><span>'+esc(l.p.nome)+(l.p.cor ? ' · '+esc(l.p.cor) : '')+' · '+esc(l.t)+
+        '<small '+SUB+'>'+(l.p.ref ? esc(l.p.ref)+' · ' : '')+'entradas '+l.ent+' · vendas '+l.ven+(l.aj ? ' · '+l.aj+(l.aj===1?' ajuste':' ajustes') : '')+'</small></span>'+
+      '<b>'+l.saldo+' em estoque</b></div>').join('')+
+    '<p class="nota" style="margin:6px 0 0">Quantidade cadastrada direto na ficha da peça não aparece como entrada. Ajuste corrige o saldo para o valor contado.</p>'+
+    '<div class="secao">Pedidos com essa peça</div>'+
+    (peds.length ? peds.map(pd => {
+      const its = pd.itens.filter(i => ids.has(i.produtoId));
+      return '<button class="rank" style="width:100%;background:none;border:0;border-bottom:1px solid var(--linho);text-align:left;font:inherit;color:inherit" data-acao="abrirPedido" data-n="'+pd.id+'">'+
+        '<span>#'+pd.numero+' · '+esc(pd.cliente)+'<small '+SUB+'>'+dataCurta(pd.ts)+' · '+
+          its.map(i => i.qtd+'x '+esc(i.cor || '')+' '+esc(i.tam)).join(', ')+'</small></span>'+
+        '<b><span class="st '+pd.status+'">'+STATUS_PED[pd.status]+'</span></b></button>';
+    }).join('') : '<p class="nota" style="margin-top:0">Essa peça ainda não entrou em nenhum pedido.</p>');
 }
 
 /* ===== período ===== */
@@ -1471,6 +1526,15 @@ async function mudarStatusPed(id, status){
   catch(e){ toast(e.message); }
 }
 
+document.addEventListener('input', e => {
+  if (e.target.dataset && e.target.dataset.buscaMov !== undefined){
+    buscaMov = e.target.value;
+    const pos = e.target.selectionStart;
+    renderVendas();
+    const novo = document.getElementById('busca-mov');
+    if (novo){ novo.focus(); try { novo.setSelectionRange(pos, pos); } catch(err){} }
+  }
+});
 folha.addEventListener('input', e => {
   const d = e.target.dataset;
   if (!rascunho) return;
