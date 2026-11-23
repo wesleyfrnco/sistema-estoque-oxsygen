@@ -1,0 +1,37 @@
+name: Publicar worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/publicar-worker.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publicar-worker
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conferir se o token da Cloudflare foi cadastrado
+        id: token
+        run: echo "ok=${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Avisar que falta o token
+        if: steps.token.outputs.ok != 'true'
+        run: echo "::warning::Cadastre CLOUDFLARE_API_TOKEN e CLOUDFLARE_ACCOUNT_ID em Settings > Secrets and variables > Actions para publicar o worker."
+
+      - name: Publicar na Cloudflare
+        if: steps.token.outputs.ok == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          preCommands: npx wrangler r2 bucket create oxsygen-backup || true
+          command: deploy

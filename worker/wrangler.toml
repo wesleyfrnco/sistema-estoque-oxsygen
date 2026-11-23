@@ -1,0 +1,27 @@
+name = "oxsygen-estoque"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+# Mantém variáveis criadas pelo painel da Cloudflare que não estejam aqui.
+keep_vars = true
+
+[vars]
+# Só o domínio, sem o nome do repositório e sem barra no final.
+ORIGENS = "https://useoxsygen.com.br,https://www.useoxsygen.com.br,https://oxsygen.com.br,https://www.oxsygen.com.br,https://sistema.oxsygen.com.br,https://wesleyfrnco.github.io"
+# Pixel da Meta (conjunto de dados). O token da API de Conversões é segredo (META_CAPI_TOKEN).
+META_PIXEL_ID = "1126764816619200"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "oxsygen"
+database_id = "bb9a05ab-ad5b-402d-963f-879e2b3cf4c4"
+
+# Cópias diárias do banco
+[[r2_buckets]]
+binding = "BACKUP"
+bucket_name = "oxsygen-backup"
+
+# Backup todo dia às 06:00 UTC (03:00 em Fortaleza)
+[triggers]
+crons = ["0 6 * * *"]
+
+# Segredos ficam só na Cloudflare, nunca aqui: SEGREDO e META_CAPI_TOKEN.
