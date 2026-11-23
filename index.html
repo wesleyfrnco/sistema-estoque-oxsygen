@@ -196,6 +196,13 @@ button{cursor:pointer}
 .sugestao{font-size:12.5px;color:var(--tinta-suave);margin:-4px 0 13px;line-height:1.5}
 .sugestao b{font-weight:500;color:var(--tinta)}
 .sugestao.apertada b{color:var(--ocre)}
+.aviso-custo{font-size:12px;color:var(--tinta-suave);margin-top:6px;line-height:1.45}
+.aviso-custo.sobe{color:var(--ocre)}
+.custos-peca{display:flex;gap:10px;margin:-4px 0 13px}
+.custos-peca div{flex:1;border:1px solid var(--borda);border-radius:10px;padding:8px 10px}
+.custos-peca span{display:block;font-size:11px;color:var(--tinta-suave);letter-spacing:.02em}
+.custos-peca b{display:block;font-size:15px;font-weight:500;color:var(--tinta);font-variant-numeric:tabular-nums}
+.custos-peca small{display:block;font-size:11px;color:var(--tinta-suave)}
 .sugestao button{background:none;border:0;padding:0;font-size:12.5px;color:var(--argila);text-decoration:underline;text-underline-offset:2px}
 .nota{font-size:12.5px;color:var(--tinta-suave);line-height:1.5;margin:22px 0 6px}
 .rodape-usuario{display:flex;align-items:center;gap:10px;margin-top:26px;padding-top:16px;border-top:1px solid var(--linho);font-size:13.5px;color:var(--tinta-suave)}
@@ -506,7 +513,8 @@ function renderEstoque(){
       '<div class="produto-meta">'+(p.cor ? '<i class="cor" style="background:'+esc(p.corHex||'#DDD2CA')+'"></i>'+esc(p.cor)+' · ' : '')+(p.ref ? '<span class="refcod">'+esc(p.ref)+'</span> · ' : '')+
         totalProduto(p)+' em estoque</div></div>'+
       '<div class="produto-preco"><b>'+brl(p.preco)+'</b>'+
-        (dono() ? '<span>custo '+brl(p.custo)+'</span>' : '')+'</div></div>'+
+        (dono() ? '<span>custo '+brl(p.custoUltimo || p.custo)+'</span>'+
+          (p.custoMedio && Math.abs(p.custoMedio - (p.custoUltimo || p.custo)) >= 0.01 ? '<span>médio '+brl(p.custoMedio)+'</span>' : '') : '')+'</div></div>'+
       '<div class="grade">'+chips+'</div>'+
       (dono() ? '<div class="produto-acoes">'+
         '<button class="link" data-acao="editar" data-p="'+p.id+'">Editar peça</button>'+
@@ -1078,7 +1086,20 @@ function produtoExistente(it){
     || null;
 }
 
-function precoAtualDe(it){ const p = produtoExistente(it); return p ? p.preco : null; }
+/* Preço que a nota vai gravar: se o custo não mudou, mantém o preço atual;
+   se mudou (ou a peça é nova), recalcula pela regra da loja. */
+function precoDaNota(it){
+  const p = produtoExistente(it);
+  if (p && Math.abs((p.custo || 0) - (it.custo || 0)) < 0.005) return p.preco;
+  return precoSugerido(it.custo || 0);
+}
+function avisoCustoNf(it){
+  const p = produtoExistente(it);
+  if (!p || !p.custo || Math.abs(p.custo - (it.custo || 0)) < 0.005) return '';
+  const sobe = it.custo > p.custo;
+  return '<div class="aviso-custo'+(sobe ? ' sobe' : '')+'">Custo '+(sobe ? 'subiu' : 'caiu')+': '+brl(p.custo)+' → '+brl(it.custo)+
+    '. Preço de venda: '+brl(p.preco)+' → '+brl(it.preco)+'</div>';
+}
 
 function folhaImportacao(){
   const pecas = itensNf.filter(i => i.usar).reduce((s,i) => s+i.qtd, 0);
@@ -1107,6 +1128,7 @@ function folhaImportacao(){
           '<div style="flex:none;display:flex;align-items:flex-end">'+
             '<button class="remover" data-acao="alternarItem" data-i="'+i+'" aria-label="Incluir ou ignorar">'+(it.usar?'×':'+')+'</button></div>'+
         '</div>'+
+        '<div data-aviso="'+i+'">'+avisoCustoNf(it)+'</div>'+
       '</div>').join('')+
     '<div class="rodape"><button class="btn fraco" data-acao="fechar">Cancelar</button>'+
       '<button class="btn" data-acao="confirmarImport">Lançar no estoque</button></div>'
@@ -1118,10 +1140,13 @@ function folhaImportacao(){
       itensNf[i][chave] = ['qtd'].includes(chave) ? inteiro(e.target.value)
         : (['custo','preco'].includes(chave) ? num(e.target.value) : e.target.value);
       if (chave === 'custo') {
-        const atual = precoAtualDe(itensNf[i]);
-        itensNf[i].preco = atual != null ? atual : precoSugerido(itensNf[i].custo);
+        itensNf[i].preco = precoDaNota(itensNf[i]);
         const campoPreco = folha.querySelector('[data-nf="preco"][data-i="'+i+'"]');
         if (campoPreco) campoPreco.value = itensNf[i].preco;
+      }
+      if (chave === 'custo' || chave === 'preco') {
+        const aviso = folha.querySelector('[data-aviso="'+i+'"]');
+        if (aviso) aviso.innerHTML = avisoCustoNf(itensNf[i]);
       }
     });
   });
@@ -1138,10 +1163,7 @@ async function abrirNf(arquivo){
     }
     const texto = await arquivo.text();
     itensNf = lerXml(texto);
-    itensNf.forEach(it => {
-      const atual = precoAtualDe(it);
-      if (atual != null) it.preco = atual;
-    });
+    itensNf.forEach(it => { it.preco = precoDaNota(it); });
     folhaImportacao();
   } catch(e){ toast(e.message); }
 }
@@ -1575,6 +1597,16 @@ function linhaGrade(tam, qtd){
     '<button class="remover" data-acao="delTam" type="button" aria-label="Remover tamanho">×</button></div>';
 }
 
+/* Último custo pago e custo médio ponderado, vindos das entradas no estoque. */
+function blocoCustos(p){
+  if (!p || !dono() || !p.custoMedio) return '';
+  const data = p.custoUltimoEm ? new Date(p.custoUltimoEm).toLocaleDateString('pt-BR') : '';
+  return '<div class="custos-peca">'+
+    '<div><span>Último custo pago</span><b>'+brl(p.custoUltimo)+'</b>'+(data ? '<small>em '+data+'</small>' : '')+'</div>'+
+    '<div><span>Custo médio</span><b>'+brl(p.custoMedio)+'</b><small>'+p.pecasCompradas+' peça'+(p.pecasCompradas === 1 ? '' : 's')+' compradas</small></div>'+
+  '</div>';
+}
+
 function formProduto(produto){
   const p = produto || { nome:'',cor:'',custo:'',preco:'',minimo:1,grade:[{tam:'P',qtd:0},{tam:'M',qtd:0},{tam:'G',qtd:0},{tam:'GG',qtd:0}] };
   abrirFolha(
@@ -1591,6 +1623,7 @@ function formProduto(produto){
       '<div class="linha"><label for="f-preco">Preço de venda</label><input id="f-preco" type="number" inputmode="decimal" step="0.01" min="0" value="'+(p.preco||'')+'" placeholder="0,00"></div>'+
     '</div>'+
     '<div class="sugestao" id="f-sugestao"></div>'+
+    blocoCustos(produto)+
     '<div class="linha"><label>Grade de tamanhos</label><div class="grade-edit" id="gradeEdit">'+
       p.grade.map(g => linhaGrade(g.tam,g.qtd)).join('')+'</div>'+
       '<button class="btn fraco largo" data-acao="addTam" type="button">Adicionar tamanho</button></div>'+
